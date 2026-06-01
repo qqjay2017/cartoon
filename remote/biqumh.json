@@ -1,0 +1,53 @@
+{
+  "bookSourceComment": "部分漫画封面无法显示，有兴趣的大佬帮忙完善一下",
+  "bookSourceGroup": "🎨 漫画",
+  "bookSourceName": "笔趣漫画",
+  "bookSourceType": 2,
+  "bookSourceUrl": "https://www.biqumh.com",
+  "bookUrlPattern": "https://www.biqumh.com/index.php/comic/.*",
+  "customButton": false,
+  "customOrder": 5,
+  "enabled": true,
+  "enabledCookieJar": false,
+  "enabledExplore": true,
+  "eventListener": false,
+  "exploreUrl": "@js:\nconst item = (title, url, basis = 0.2) => {\n  return {\n    title,\n    url,\n    style: {\n      layout_flexGrow: 0,\n      layout_flexBasisPercent: basis\n    }\n  };\n};\n\nconst tags = \"题材&全部$$热血$6$$冒险$7$$科幻$8$$霸总$9$$玄幻$10$$校园$11$$修真$12$$搞笑$13$$穿越$14$$后宫$15$$耽美$16$$恋爱$17$$悬疑$18$$恐怖$19$$战争$20$$动作$21$$同人$22$$竞技$23$$励志$24$$架空$25$$灵异$26$$百合$27$$古风$28$$生活$29&&进度&连载$1$$完结$2&&受众&少年$1$$少女$2$$青年$3$$少儿$4\"\n\nconst list = [];\n\nconst fl = {\n  \"题材\": \"tags\",\n  \"进度\": \"finish\",\n  \"受众\": \"list\"\n}\n\nconst url = \"/index.php/api/data/comic?\";\nconst type = {\n  tags: undefined,\n  order: \"hits\",\n  list: 0,\n  pay: 0,\n  finish: 0\n};\n\ntags.split(\"&&\").forEach(bigCat => {\n  let [bigTitle, cat] = bigCat.split(\"&\");\n  list.push(item(bigTitle, null, 1));\n  cat.split(\"$$\").forEach(tag => {\n    let [title, id] = tag.split(\"$\");\n    let typeKey = fl[bigTitle];\n    let queryType = Object.assign({}, type, {[typeKey]:id})\n    let query = Object.entries(queryType)\n      .filter(([_, v]) => v !== undefined)\n      .map(([k, v]) => `type[${k}]=${v}`)\n      .join(\"&\");\n\n    list.push(item(title, url + query + \"&page={{page}}\"));\n  });\n});\n\nJSON.stringify(list)",
+  "header": "{\n\t \"Accept\": \"text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01\",\n  \"X-Requested-With\": \"XMLHttpRequest\",\n  \"Referer\": \"https://www.biqumh.com/\"\n}",
+  "lastUpdateTime": 1753236961849,
+  "respondTime": 18110,
+  "ruleBookInfo": {
+    "author": ".comic-author .name@text",
+    "coverUrl": ".de-info__bg@style##url\\('(.*?)'\\)##$1###",
+    "intro": ".intro-total@text",
+    "kind": ".comic-status span a@text",
+    "name": ".j-comic-title@text"
+  },
+  "ruleContent": {
+    "content": "@js:\nconst imgs = java.getElements(\".rd-article-wr img\")\nimgs.forEach(e => {\n  e.attr(\"src\", e.attr(\"data-original\"))\n})\nimgs"
+  },
+  "ruleExplore": {
+    "author": "$.author",
+    "bookList": "$.data",
+    "bookUrl": "$.url",
+    "coverUrl": "$.pic",
+    "intro": "$.content",
+    "kind": "$.serialize&&$.tags&&$.addtime",
+    "lastChapter": "$.chapter_name",
+    "name": "$.name"
+  },
+  "ruleSearch": {
+    "bookList": ".common-comic-item",
+    "bookUrl": ".comic__title a@href",
+    "coverUrl": "img@data-original",
+    "intro": ".comic-feature@text",
+    "lastChapter": ".comic-update a@text##待浏览",
+    "name": ".comic__title a@text"
+  },
+  "ruleToc": {
+    "chapterList": ".chapter__list-box li a",
+    "chapterName": "text",
+    "chapterUrl": "href"
+  },
+  "searchUrl": "/index.php/search?key={{key}}",
+  "weight": 0
+}
