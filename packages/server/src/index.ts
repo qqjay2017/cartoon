@@ -14,10 +14,13 @@ import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { DownloadJobManager } from './download-jobs.js'
+import { readProxyEnv, setupOutboundProxy } from './setup-proxy.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(__dirname, '../../..')
 const remoteDir = join(rootDir, 'remote')
+
+const proxyEnv = setupOutboundProxy()
 
 const defaultHeaders = {
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -98,7 +101,7 @@ function encodeContentDisposition(filename: string): string {
   return `attachment; filename="${filename.replace(/"/g, '')}"; filename*=UTF-8''${encoded}`
 }
 
-app.get('/api/health', c => c.json({ ok: true }))
+app.get('/api/health', c => c.json({ ok: true, proxy: readProxyEnv() }))
 
 app.get('/api/sources', c => {
   const type = c.req.query('type')
@@ -416,6 +419,10 @@ app.get('/api/proxy', async (c) => {
 const port = Number(process.env.PORT ?? 8787)
 console.log(`[cartoon] loaded ${sources.length} sources from ${remoteDir}`)
 console.log(`[cartoon] comic cache dir: ${comicCache.getCacheRoot()}`)
+if (proxyEnv.active)
+  console.log(`[cartoon] outbound proxy: ${proxyEnv.display}`)
+else
+  console.log('[cartoon] outbound proxy: (none)')
 console.log(`[cartoon] server http://127.0.0.1:${port}`)
 
 serve({ fetch: app.fetch, port })

@@ -11,7 +11,8 @@
   "dependencies": {
     "@cartoon/core": "workspace:*",
     "@hono/node-server": "^1.14.4",
-    "hono": "^4.7.10"
+    "hono": "^4.7.10",
+    "undici": "^8.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

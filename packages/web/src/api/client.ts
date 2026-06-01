@@ -100,6 +100,10 @@ export interface BookCacheStatus {
   progress?: CacheJobProgress
 }
 
+const DOWNLOAD_JOB_POLL_MIN_MS = 2500
+const DOWNLOAD_JOB_POLL_MAX_MS = 5000
+const DOWNLOAD_JOB_POLL_BACKOFF_MS = 500
+
 export interface DownloadProgress {
   phase: 'toc' | 'chapters' | 'pack'
   current: number
@@ -115,6 +119,13 @@ export interface DownloadJobSnapshot {
   progress?: DownloadProgress
   error?: string
   filename?: string
+}
+
+function downloadProgressKey(job: DownloadJobSnapshot): string {
+  if (!job.progress)
+    return job.status
+  const { phase, current, total, message } = job.progress
+  return `${job.status}:${phase}:${current}:${total}:${message ?? ''}`
 }
 
 export const api = {
@@ -192,8 +203,8 @@ export const api = {
     })
   },
 
-  getDownloadJob(jobId: string) {
-    return fetchJsonWithRetry<DownloadJobSnapshot>(`/api/download/jobs/${jobId}`)
+  getDownloadJob(jobId: string, retries = 5) {
+    return fetchJsonWithRetry<DownloadJobSnapshot>(`/api/download/jobs/${jobId}`, retries)
   },
 
   triggerDownloadJobFile(jobId: string, filename: string) {
@@ -213,9 +224,12 @@ export const api = {
       progress: { phase: 'toc', current: 0, total: 1, message: '任务已创建' },
     }
 
+    let pollDelayMs = DOWNLOAD_JOB_POLL_MIN_MS
+    let lastProgressKey = ''
+
     while (true) {
       try {
-        const job = await this.getDownloadJob(jobId)
+        const job = await this.getDownloadJob(jobId, 2)
         lastSnapshot = job
         onProgress(job)
 
@@ -227,17 +241,25 @@ export const api = {
 
         if (job.status === 'error')
           throw new Error(job.error ?? '下载失败')
+
+        const progressKey = downloadProgressKey(job)
+        if (progressKey === lastProgressKey)
+          pollDelayMs = Math.min(pollDelayMs + DOWNLOAD_JOB_POLL_BACKOFF_MS, DOWNLOAD_JOB_POLL_MAX_MS)
+        else {
+          pollDelayMs = DOWNLOAD_JOB_POLL_MIN_MS
+          lastProgressKey = progressKey
+        }
       }
       catch (error) {
         if (isTransientFetchError(error)) {
           onProgress(lastSnapshot)
-          await new Promise(resolve => setTimeout(resolve, 1500))
+          await new Promise(resolve => setTimeout(resolve, DOWNLOAD_JOB_POLL_MIN_MS))
           continue
         }
         throw normalizeFetchError(error)
       }
 
-      await new Promise(resolve => setTimeout(resolve, 800))
+      await new Promise(resolve => setTimeout(resolve, pollDelayMs))
     }
   },
 
