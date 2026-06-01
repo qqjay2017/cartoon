@@ -19,6 +19,8 @@ interface ReaderSettingsState {
   pageDirection: PageDirection
   novelMode: NovelMode
   webtoonAutoNext: boolean
+  comicAutoCache: boolean
+  comicPrefetchCount: number
   showToolbar: boolean
 }
 
@@ -46,6 +48,8 @@ function defaults(): ReaderSettingsState {
     pageDirection: 'ltr',
     novelMode: 'scroll',
     webtoonAutoNext: true,
+    comicAutoCache: true,
+    comicPrefetchCount: 100,
     showToolbar: true,
   }
 }
@@ -60,9 +64,11 @@ export const useReaderSettingsStore = defineStore('reader-settings', () => {
   const pageDirection = ref<PageDirection>(saved.pageDirection)
   const novelMode = ref<NovelMode>(saved.novelMode)
   const webtoonAutoNext = ref(saved.webtoonAutoNext)
+  const comicAutoCache = ref(saved.comicAutoCache ?? true)
+  const comicPrefetchCount = ref(saved.comicPrefetchCount ?? 100)
   const showToolbar = ref(saved.showToolbar)
 
-  watch([theme, fontSize, lineHeight, comicMode, comicFit, pageDirection, novelMode, webtoonAutoNext, showToolbar], () => {
+  watch([theme, fontSize, lineHeight, comicMode, comicFit, pageDirection, novelMode, webtoonAutoNext, comicAutoCache, comicPrefetchCount, showToolbar], () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       theme: theme.value,
       fontSize: fontSize.value,
@@ -72,6 +78,8 @@ export const useReaderSettingsStore = defineStore('reader-settings', () => {
       pageDirection: pageDirection.value,
       novelMode: novelMode.value,
       webtoonAutoNext: webtoonAutoNext.value,
+      comicAutoCache: comicAutoCache.value,
+      comicPrefetchCount: comicPrefetchCount.value,
       showToolbar: showToolbar.value,
     }))
   }, { deep: true })
@@ -97,6 +105,8 @@ export const useReaderSettingsStore = defineStore('reader-settings', () => {
     pageDirection,
     novelMode,
     webtoonAutoNext,
+    comicAutoCache,
+    comicPrefetchCount,
     showToolbar,
     toggleToolbar,
     toggleNightMode,

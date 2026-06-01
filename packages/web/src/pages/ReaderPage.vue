@@ -2,7 +2,7 @@
 import type { ChapterItem } from '../api/client'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, proxyImage } from '../api/client'
+import { api, proxyImage, type BookCacheStatus } from '../api/client'
 import { useBookshelfStore } from '../stores/bookshelf'
 import { useReaderSettingsStore, type ReaderTheme } from '../stores/reader-settings'
 
@@ -24,6 +24,9 @@ const scrollProgress = ref(0)
 const readerBodyRef = ref<HTMLElement | null>(null)
 const autoNextLock = ref(false)
 const skipRouteReload = ref(false)
+const cacheStatus = ref<BookCacheStatus | null>(null)
+const cacheHint = ref('')
+let cachePollTimer: ReturnType<typeof setInterval> | undefined
 
 const sourceId = String(route.query.sourceId ?? '')
 const chapterUrl = String(route.query.url ?? '')
@@ -91,6 +94,62 @@ function normalizeUrl(url: string) {
   }
 }
 
+const cacheProgressText = computed(() => {
+  if (!isComic.value || !cacheStatus.value)
+    return ''
+  const { cachedChapters, totalChapters, caching, progress } = cacheStatus.value
+  if (caching && progress)
+    return `缓存 ${progress.current}/${progress.total}`
+  if (cachedChapters > 0)
+    return `已缓存 ${cachedChapters}/${totalChapters || chapters.value.length}`
+  return ''
+})
+
+async function refreshCacheStatus() {
+  if (!isComic.value || !bookUrl)
+    return
+
+  try {
+    cacheStatus.value = await api.getCacheStatus(sourceId, bookUrl, chapters.value.length)
+    if (cacheStatus.value.caching && !cachePollTimer)
+      cachePollTimer = setInterval(refreshCacheStatus, 2000)
+    else if (!cacheStatus.value.caching && cachePollTimer) {
+      clearInterval(cachePollTimer)
+      cachePollTimer = undefined
+    }
+  }
+  catch {
+    // ignore
+  }
+}
+
+function triggerComicPrefetch(chapterUrl: string) {
+  if (!isComic.value || !bookUrl || !settings.comicAutoCache)
+    return
+
+  void api.prefetchCache(
+    sourceId,
+    bookUrl,
+    chapterUrl,
+    settings.comicPrefetchCount,
+  ).then(() => refreshCacheStatus()).catch(() => {})
+}
+
+async function cacheAllComic() {
+  if (!isComic.value || !bookUrl)
+    return
+
+  cacheHint.value = ''
+  try {
+    const result = await api.cacheAll(sourceId, bookUrl)
+    cacheHint.value = result.alreadyRunning ? '缓存任务进行中' : '已开始缓存全部'
+    await refreshCacheStatus()
+  }
+  catch (e) {
+    cacheHint.value = e instanceof Error ? e.message : '启动缓存失败'
+  }
+}
+
 async function loadChapter(url: string, chapterTitle: string) {
   loading.value = true
   error.value = ''
@@ -98,10 +157,13 @@ async function loadChapter(url: string, chapterTitle: string) {
   scrollProgress.value = 0
 
   try {
-    const content = await api.getChapter(sourceId, url)
+    const content = await api.getChapter(sourceId, url, bookUrl || undefined)
     text.value = content.text ?? ''
     images.value = content.images ?? []
     title.value = chapterTitle
+
+    if (isComic.value && bookUrl)
+      triggerComicPrefetch(url)
 
     if (bookUrl) {
       const item = bookshelf.items.find(i => i.sourceId === sourceId && i.bookUrl === bookUrl)
@@ -159,7 +221,7 @@ async function autoLoadNextChapter() {
   autoNextLock.value = true
 
   try {
-    const content = await api.getChapter(sourceId, next.url)
+    const content = await api.getChapter(sourceId, next.url, bookUrl || undefined)
     images.value.push(...(content.images ?? []))
     title.value = next.name
 
@@ -377,12 +439,15 @@ onMounted(async () => {
     loadChapter(chapterUrl, title.value),
     loadToc(),
   ])
+  await refreshCacheStatus()
 
   window.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
+  if (cachePollTimer)
+    clearInterval(cachePollTimer)
 })
 </script>
 
@@ -401,6 +466,15 @@ onUnmounted(() => {
         夜间
       </button>
       <button class="reader-btn" type="button" @click="showToc = true">目录</button>
+      <button
+        v-if="isComic && bookUrl"
+        class="reader-btn"
+        type="button"
+        :disabled="cacheStatus?.caching"
+        @click="cacheAllComic"
+      >
+        缓存全部
+      </button>
       <button class="reader-btn" type="button" @click="showSettings = true">设置</button>
     </header>
 
@@ -484,7 +558,10 @@ onUnmounted(() => {
       <button class="reader-btn" type="button" :disabled="!hasPrevChapter" @click="prevChapter">
         上一章
       </button>
-      <div class="reader-progress">{{ progressText }}</div>
+      <div class="reader-progress">
+        {{ progressText }}
+        <span v-if="cacheProgressText" class="reader-cache-hint"> · {{ cacheProgressText }}</span>
+      </div>
       <div v-if="isPagedComic" style="display: flex; gap: 8px;">
         <button class="reader-btn" type="button" @click="onTapPrev">上一页</button>
         <button class="reader-btn primary" type="button" @click="onTapNext">下一页</button>
@@ -563,6 +640,15 @@ onUnmounted(() => {
               <option value="original">原始尺寸</option>
             </select>
           </div>
+          <div class="reader-setting-row reader-setting-toggle">
+            <label>阅读时自动缓存后续章节</label>
+            <input v-model="settings.comicAutoCache" type="checkbox">
+          </div>
+          <div v-if="settings.comicAutoCache" class="reader-setting-row">
+            <label>预缓存章数：{{ settings.comicPrefetchCount }}</label>
+            <input v-model.number="settings.comicPrefetchCount" type="range" min="10" max="200" step="10">
+          </div>
+          <p v-if="cacheHint" class="meta">{{ cacheHint }}</p>
         </template>
 
         <p class="meta" style="margin-top: 8px; line-height: 1.6;">

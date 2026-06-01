@@ -474,6 +474,11 @@
   color: var(--reader-muted);
 }
 
+.reader-cache-hint {
+  color: var(--reader-muted);
+  font-size: 0.8rem;
+}
+
 @media (max-width: 640px) {
   .reader-bar {
     padding: 8px 10px;

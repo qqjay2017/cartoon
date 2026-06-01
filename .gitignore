@@ -3,3 +3,6 @@ dist
 .DS_Store
 *.log
 .env
+cache/*
+!cache/.gitkeep
+!cache/config.json

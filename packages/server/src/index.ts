@@ -2,6 +2,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   BookService,
+  ComicCacheService,
   DownloadService,
   loadSourcesFromDir,
   SourceRegistry,
@@ -71,7 +72,9 @@ const binaryFetcher: BinaryFetcher = async (url, options = {}) => {
 
 const sources = await loadSourcesFromDir(remoteDir)
 const bookService = new BookService({ fetcher })
-const downloadService = new DownloadService(bookService, binaryFetcher)
+const comicCache = new ComicCacheService({ projectRoot: rootDir, bookService, binaryFetcher })
+await comicCache.init()
+const downloadService = new DownloadService(bookService, binaryFetcher, comicCache)
 const registry = new SourceRegistry(sources, bookService)
 
 const app = new Hono()
@@ -140,6 +143,7 @@ app.get('/api/toc', async (c) => {
 app.get('/api/chapter', async (c) => {
   const sourceId = c.req.query('sourceId')
   const chapterUrl = c.req.query('url')
+  const bookUrl = c.req.query('bookUrl')
   if (!sourceId || !chapterUrl)
     return c.json({ error: 'missing sourceId or url' }, 400)
 
@@ -147,7 +151,27 @@ app.get('/api/chapter', async (c) => {
   if (!source)
     return c.json({ error: 'source not found' }, 404)
 
+  if (source.bookSourceType === 2 && bookUrl) {
+    const cached = await comicCache.getCachedChapterContent(sourceId, bookUrl, chapterUrl)
+    if (cached)
+      return c.json({ ...cached, cached: true })
+  }
+
   const content = await bookService.getChapterContent(source, chapterUrl)
+
+  if (source.bookSourceType === 2 && bookUrl && !(await comicCache.hasChapter(sourceId, bookUrl, chapterUrl))) {
+    try {
+      const detail = await bookService.getBookDetail(source, bookUrl)
+      const toc = await bookService.getToc(source, detail.tocUrl ?? bookUrl)
+      const chapter = toc.find(ch => ch.url === chapterUrl)
+      if (chapter)
+        void comicCache.cacheChapter(source, bookUrl, chapter, detail.name).catch(() => {})
+    }
+    catch {
+      // ignore background cache errors
+    }
+  }
+
   return c.json(content)
 })
 
@@ -155,8 +179,8 @@ app.get('/api/download', async (c) => {
   const sourceId = c.req.query('sourceId')
   const bookUrl = c.req.query('url')
   const format = c.req.query('format')
-  if (!sourceId || !bookUrl || (format !== 'epub' && format !== 'cbz'))
-    return c.json({ error: 'missing sourceId, url, or invalid format (epub|cbz)' }, 400)
+  if (!sourceId || !bookUrl || !['epub', 'txt', 'cbz', 'folder'].includes(format ?? ''))
+    return c.json({ error: 'missing sourceId, url, or invalid format (epub|txt|cbz|folder)' }, 400)
 
   const source = registry.get(sourceId)
   if (!source)
@@ -187,6 +211,96 @@ app.get('/api/download', async (c) => {
   }
 })
 
+app.get('/api/cache/config', async (c) => {
+  return c.json(await comicCache.getConfig())
+})
+
+app.put('/api/cache/config', async (c) => {
+  const body = await c.req.json<{ comicDir?: string }>()
+  if (!body.comicDir?.trim())
+    return c.json({ error: 'missing comicDir' }, 400)
+
+  try {
+    return c.json(await comicCache.setCacheDir(body.comicDir.trim()))
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : 'invalid cache dir'
+    return c.json({ error: message }, 400)
+  }
+})
+
+app.get('/api/cache/status', async (c) => {
+  const sourceId = c.req.query('sourceId')
+  const bookUrl = c.req.query('bookUrl')
+  if (!sourceId || !bookUrl)
+    return c.json({ error: 'missing sourceId or bookUrl' }, 400)
+
+  const totalChapters = Number(c.req.query('totalChapters') ?? 0)
+  return c.json(await comicCache.getStatus(sourceId, bookUrl, totalChapters))
+})
+
+app.post('/api/cache/all', async (c) => {
+  const body = await c.req.json<{ sourceId?: string, bookUrl?: string }>()
+  if (!body.sourceId || !body.bookUrl)
+    return c.json({ error: 'missing sourceId or bookUrl' }, 400)
+
+  const source = registry.get(body.sourceId)
+  if (!source)
+    return c.json({ error: 'source not found' }, 404)
+  if (source.bookSourceType !== 2)
+    return c.json({ error: 'only comic books can be cached' }, 400)
+
+  const result = comicCache.startCacheAll(source, body.bookUrl)
+  return c.json(result)
+})
+
+app.post('/api/cache/prefetch', async (c) => {
+  const body = await c.req.json<{ sourceId?: string, bookUrl?: string, chapterUrl?: string, count?: number }>()
+  if (!body.sourceId || !body.bookUrl || !body.chapterUrl)
+    return c.json({ error: 'missing sourceId, bookUrl or chapterUrl' }, 400)
+
+  const source = registry.get(body.sourceId)
+  if (!source)
+    return c.json({ error: 'source not found' }, 404)
+  if (source.bookSourceType !== 2)
+    return c.json({ error: 'only comic books can be cached' }, 400)
+
+  const count = Math.min(Math.max(body.count ?? 100, 1), 500)
+  const result = comicCache.startPrefetch(source, body.bookUrl, body.chapterUrl, count)
+  return c.json(result)
+})
+
+app.delete('/api/cache', async (c) => {
+  const sourceId = c.req.query('sourceId')
+  const bookUrl = c.req.query('bookUrl')
+  if (!sourceId || !bookUrl)
+    return c.json({ error: 'missing sourceId or bookUrl' }, 400)
+
+  await comicCache.clearBook(sourceId, bookUrl)
+  return c.json({ ok: true })
+})
+
+app.get('/api/cache/image', async (c) => {
+  const sourceId = c.req.query('sourceId')
+  const bookUrl = c.req.query('bookUrl')
+  const chapterUrl = c.req.query('chapterUrl')
+  const page = Number(c.req.query('page') ?? 0)
+
+  if (!sourceId || !bookUrl || !chapterUrl)
+    return c.json({ error: 'missing params' }, 400)
+
+  const image = await comicCache.readCachedImage(sourceId, bookUrl, chapterUrl, page)
+  if (!image)
+    return c.json({ error: 'image not found' }, 404)
+
+  return new Response(Buffer.from(image.data), {
+    headers: {
+      'Content-Type': image.contentType,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  })
+})
+
 app.get('/api/proxy', async (c) => {
   const url = c.req.query('url')
   if (!url)
@@ -208,6 +322,7 @@ app.get('/api/proxy', async (c) => {
 
 const port = Number(process.env.PORT ?? 8787)
 console.log(`[cartoon] loaded ${sources.length} sources from ${remoteDir}`)
+console.log(`[cartoon] comic cache dir: ${comicCache.getCacheRoot()}`)
 console.log(`[cartoon] server http://127.0.0.1:${port}`)
 
 serve({ fetch: app.fetch, port })

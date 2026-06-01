@@ -28,7 +28,27 @@ async function getJson<T>(url: string): Promise<T> {
 export function proxyImage(url?: string) {
   if (!url)
     return ''
+  if (url.startsWith('/api/cache/'))
+    return url
   return `/api/proxy?url=${encodeURIComponent(url)}`
+}
+
+export interface CacheJobProgress {
+  running: boolean
+  current: number
+  total: number
+  message?: string
+  error?: string
+}
+
+export interface BookCacheStatus {
+  sourceId: string
+  bookUrl: string
+  cacheDir: string
+  totalChapters: number
+  cachedChapters: number
+  caching: boolean
+  progress?: CacheJobProgress
 }
 
 export const api = {
@@ -54,12 +74,14 @@ export const api = {
     return getJson<{ chapters: ChapterItem[] }>(`/api/toc?${params}`)
   },
 
-  getChapter(sourceId: string, url: string) {
+  getChapter(sourceId: string, url: string, bookUrl?: string) {
     const params = new URLSearchParams({ sourceId, url })
-    return getJson<ChapterContent>(`/api/chapter?${params}`)
+    if (bookUrl)
+      params.set('bookUrl', bookUrl)
+    return getJson<ChapterContent & { cached?: boolean }>(`/api/chapter?${params}`)
   },
 
-  buildDownloadUrl(sourceId: string, bookUrl: string, format: 'epub' | 'cbz', range?: { start?: number, end?: number }) {
+  buildDownloadUrl(sourceId: string, bookUrl: string, format: DownloadFormat, range?: { start?: number, end?: number }) {
     const params = new URLSearchParams({ sourceId, url: bookUrl, format })
     if (range?.start !== undefined)
       params.set('start', String(range.start))
@@ -68,7 +90,7 @@ export const api = {
     return `/api/download?${params}`
   },
 
-  async downloadBook(sourceId: string, bookUrl: string, format: 'epub' | 'cbz', range?: { start?: number, end?: number }) {
+  async downloadBook(sourceId: string, bookUrl: string, format: DownloadFormat, range?: { start?: number, end?: number }) {
     const url = this.buildDownloadUrl(sourceId, bookUrl, format, range)
     const response = await fetch(url)
     if (!response.ok) {
@@ -89,6 +111,71 @@ export const api = {
 
     return { blob, filename }
   },
+
+  getCacheConfig() {
+    return getJson<{ comicDir: string }>('/api/cache/config')
+  },
+
+  setCacheConfig(comicDir: string) {
+    return fetch('/api/cache/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ comicDir }),
+    }).then(async (response) => {
+      if (!response.ok)
+        throw new Error(await response.text())
+      return response.json() as Promise<{ comicDir: string }>
+    })
+  },
+
+  getCacheStatus(sourceId: string, bookUrl: string, totalChapters?: number) {
+    const params = new URLSearchParams({ sourceId, bookUrl })
+    if (totalChapters !== undefined)
+      params.set('totalChapters', String(totalChapters))
+    return getJson<BookCacheStatus>(`/api/cache/status?${params}`)
+  },
+
+  cacheAll(sourceId: string, bookUrl: string) {
+    return fetch('/api/cache/all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId, bookUrl }),
+    }).then(async (response) => {
+      if (!response.ok)
+        throw new Error(await response.text())
+      return response.json() as Promise<{ started: boolean, alreadyRunning?: boolean }>
+    })
+  },
+
+  prefetchCache(sourceId: string, bookUrl: string, chapterUrl: string, count = 100) {
+    return fetch('/api/cache/prefetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId, bookUrl, chapterUrl, count }),
+    }).then(async (response) => {
+      if (!response.ok)
+        throw new Error(await response.text())
+      return response.json() as Promise<{ started: boolean, alreadyRunning?: boolean }>
+    })
+  },
+
+  clearCache(sourceId: string, bookUrl: string) {
+    const params = new URLSearchParams({ sourceId, bookUrl })
+    return fetch(`/api/cache?${params}`, { method: 'DELETE' }).then(async (response) => {
+      if (!response.ok)
+        throw new Error(await response.text())
+      return response.json() as Promise<{ ok: boolean }>
+    })
+  },
 }
 
 export type { BookshelfItem, SearchBook }
+
+export type DownloadFormat = 'epub' | 'txt' | 'cbz' | 'folder'
+
+export const DOWNLOAD_FORMAT_LABELS: Record<DownloadFormat, string> = {
+  epub: 'EPUB',
+  txt: 'TXT',
+  cbz: 'CBZ',
+  folder: '文件夹 (ZIP)',
+}
