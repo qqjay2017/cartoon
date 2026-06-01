@@ -150,6 +150,11 @@ export class BookService {
       ? tocUrl
       : new URL(tocUrl, source.bookSourceUrl).href
 
+    const session = this.getSession(source)
+    const midFromTocUrl = resolvedTocUrl.match(/[?&]mid=(\d+)/)?.[1]
+    if (midFromTocUrl)
+      session.javaPut('mid', midFromTocUrl)
+
     const content = await this.options.fetcher(resolvedTocUrl, {
       headers: await this.resolveHeaders(source, resolvedTocUrl),
     })

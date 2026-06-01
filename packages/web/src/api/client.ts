@@ -74,10 +74,12 @@ export const api = {
     return getJson<{ chapters: ChapterItem[] }>(`/api/toc?${params}`)
   },
 
-  getChapter(sourceId: string, url: string, bookUrl?: string) {
+  getChapter(sourceId: string, url: string, bookUrl?: string, tocUrl?: string) {
     const params = new URLSearchParams({ sourceId, url })
     if (bookUrl)
       params.set('bookUrl', bookUrl)
+    if (tocUrl)
+      params.set('tocUrl', tocUrl)
     return getJson<ChapterContent & { cached?: boolean }>(`/api/chapter?${params}`)
   },
 

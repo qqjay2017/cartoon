@@ -36,7 +36,7 @@
     "ruleToc": {
       "chapterList": ".chapters[*]",
       "chapterName": ".title",
-      "chapterUrl": "<js>\nvar mid=java.get(\"mid\")\nvar id=`{{$..id}}`\nvar r=`https://api-get-v2.mgsearcher.com/api/chapter/getinfo?m=${mid}&c=${id}`\nr;\n</js>",
+      "chapterUrl": "<js>\nvar mid=java.get(\"mid\");\nif(!mid){\n  var m=baseUrl.match(/[?&]mid=(\\d+)/);\n  if(m) mid=m[1];\n}\nvar id=`{{$..id}}`;\nvar r=`https://api-get-v2.mgsearcher.com/api/chapter/getinfo?m=${mid}&c=${id}`;\nr;\n</js>",
       "updateTime": ".updatedAt"
     },
     "searchUrl": "{{bhost()}}/s/{{key}}?page={{page}}",

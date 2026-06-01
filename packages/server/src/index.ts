@@ -142,10 +142,13 @@ app.get('/api/toc', async (c) => {
 
 app.get('/api/chapter', async (c) => {
   const sourceId = c.req.query('sourceId')
-  const chapterUrl = c.req.query('url')
+  let chapterUrl = c.req.query('url')
   const bookUrl = c.req.query('bookUrl')
+  const tocUrl = c.req.query('tocUrl')
   if (!sourceId || !chapterUrl)
     return c.json({ error: 'missing sourceId or url' }, 400)
+
+  chapterUrl = fixMgsearcherChapterUrl(chapterUrl, tocUrl, c.req.query('c'), c.req.query('m'))
 
   const source = registry.get(sourceId)
   if (!source)
@@ -174,6 +177,30 @@ app.get('/api/chapter', async (c) => {
 
   return c.json(content)
 })
+
+function fixMgsearcherChapterUrl(
+  chapterUrl: string,
+  tocUrl?: string,
+  leakedC?: string,
+  leakedM?: string,
+): string {
+  if (!chapterUrl.includes('mgsearcher.com/api/chapter/getinfo'))
+    return chapterUrl
+
+  let url = chapterUrl
+  const midFromToc = tocUrl?.match(/[?&]mid=(\d+)/)?.[1] ?? leakedM
+
+  if (!url.match(/[?&]c=\d+/) && leakedC)
+    url = `${url}${url.includes('?') ? '&' : '?'}c=${leakedC}`
+
+  if (midFromToc) {
+    url = url.replace(/([?&])m=&/, `$1m=${midFromToc}&`)
+    if (url.endsWith('?m=') || url.endsWith('&m='))
+      url = `${url}${midFromToc}`
+  }
+
+  return url
+}
 
 app.get('/api/download', async (c) => {
   const sourceId = c.req.query('sourceId')

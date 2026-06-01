@@ -11,6 +11,7 @@ import {
   type DownloadFormat,
 } from '../api/client'
 import { useBookshelfStore } from '../stores/bookshelf'
+import { buildReadRouteQuery } from '../utils/route-query'
 
 const route = useRoute()
 const router = useRouter()
@@ -136,14 +137,14 @@ function addToShelf() {
 function readChapter(chapter: ChapterItem) {
   router.push({
     name: 'read',
-    query: {
+    query: buildReadRouteQuery({
       sourceId,
       url: chapter.url,
       bookUrl,
       tocUrl: detail.value?.tocUrl ?? bookUrl,
-      sourceType: String(detail.value?.sourceType ?? 0),
+      sourceType: detail.value?.sourceType ?? 0,
       title: chapter.name,
-    },
+    }),
   })
 }
 

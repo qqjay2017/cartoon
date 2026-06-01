@@ -5,13 +5,16 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, proxyImage, type BookCacheStatus } from '../api/client'
 import { useBookshelfStore } from '../stores/bookshelf'
 import { useReaderSettingsStore, type ReaderTheme } from '../stores/reader-settings'
+import { buildReadRouteQuery, parseReadRouteQuery } from '../utils/route-query'
 
 const route = useRoute()
 const router = useRouter()
 const bookshelf = useBookshelfStore()
 const settings = useReaderSettingsStore()
 
-const title = ref(String(route.query.title ?? '阅读'))
+const routeParams = computed(() => parseReadRouteQuery(route.query))
+
+const title = ref(routeParams.value.title || '阅读')
 const text = ref('')
 const images = ref<string[]>([])
 const chapters = ref<ChapterItem[]>([])
@@ -28,13 +31,13 @@ const cacheStatus = ref<BookCacheStatus | null>(null)
 const cacheHint = ref('')
 let cachePollTimer: ReturnType<typeof setInterval> | undefined
 
-const sourceId = String(route.query.sourceId ?? '')
-const chapterUrl = String(route.query.url ?? '')
-const bookUrl = String(route.query.bookUrl ?? '')
-const tocUrl = String(route.query.tocUrl ?? '')
-const sourceType = Number(route.query.sourceType ?? 0)
+const sourceId = computed(() => routeParams.value.sourceId)
+const chapterUrl = computed(() => routeParams.value.chapterUrl)
+const bookUrl = computed(() => routeParams.value.bookUrl)
+const tocUrl = computed(() => routeParams.value.tocUrl)
+const sourceType = computed(() => routeParams.value.sourceType)
 
-const isComic = computed(() => sourceType === 2)
+const isComic = computed(() => sourceType.value === 2)
 const isWebtoon = computed(() => isComic.value && settings.comicMode === 'webtoon')
 const isScrollComic = computed(() => isComic.value && settings.comicMode === 'scroll')
 const isPagedComic = computed(() => isComic.value && settings.comicMode === 'paged')
@@ -42,7 +45,9 @@ const isNovelPaged = computed(() => !isComic.value && settings.novelMode === 'pa
 const isRtl = computed(() => settings.pageDirection === 'rtl')
 
 const currentChapterIndex = computed(() =>
-  chapters.value.findIndex(ch => ch.url === chapterUrl || normalizeUrl(ch.url) === normalizeUrl(chapterUrl)),
+  chapters.value.findIndex(ch =>
+    ch.url === chapterUrl.value || normalizeUrl(ch.url) === normalizeUrl(chapterUrl.value),
+  ),
 )
 const hasPrevChapter = computed(() => currentChapterIndex.value > 0)
 const hasNextChapter = computed(() =>
@@ -106,11 +111,11 @@ const cacheProgressText = computed(() => {
 })
 
 async function refreshCacheStatus() {
-  if (!isComic.value || !bookUrl)
+  if (!isComic.value || !bookUrl.value)
     return
 
   try {
-    cacheStatus.value = await api.getCacheStatus(sourceId, bookUrl, chapters.value.length)
+    cacheStatus.value = await api.getCacheStatus(sourceId.value, bookUrl.value, chapters.value.length)
     if (cacheStatus.value.caching && !cachePollTimer)
       cachePollTimer = setInterval(refreshCacheStatus, 2000)
     else if (!cacheStatus.value.caching && cachePollTimer) {
@@ -123,25 +128,25 @@ async function refreshCacheStatus() {
   }
 }
 
-function triggerComicPrefetch(chapterUrl: string) {
-  if (!isComic.value || !bookUrl || !settings.comicAutoCache)
+function triggerComicPrefetch(url: string) {
+  if (!isComic.value || !bookUrl.value || !settings.comicAutoCache)
     return
 
   void api.prefetchCache(
-    sourceId,
-    bookUrl,
-    chapterUrl,
+    sourceId.value,
+    bookUrl.value,
+    url,
     settings.comicPrefetchCount,
   ).then(() => refreshCacheStatus()).catch(() => {})
 }
 
 async function cacheAllComic() {
-  if (!isComic.value || !bookUrl)
+  if (!isComic.value || !bookUrl.value)
     return
 
   cacheHint.value = ''
   try {
-    const result = await api.cacheAll(sourceId, bookUrl)
+    const result = await api.cacheAll(sourceId.value, bookUrl.value)
     cacheHint.value = result.alreadyRunning ? '缓存任务进行中' : '已开始缓存全部'
     await refreshCacheStatus()
   }
@@ -157,16 +162,21 @@ async function loadChapter(url: string, chapterTitle: string) {
   scrollProgress.value = 0
 
   try {
-    const content = await api.getChapter(sourceId, url, bookUrl || undefined)
+    const content = await api.getChapter(
+      sourceId.value,
+      url,
+      bookUrl.value || undefined,
+      tocUrl.value || undefined,
+    )
     text.value = content.text ?? ''
     images.value = content.images ?? []
     title.value = chapterTitle
 
-    if (isComic.value && bookUrl)
+    if (isComic.value && bookUrl.value)
       triggerComicPrefetch(url)
 
-    if (bookUrl) {
-      const item = bookshelf.items.find(i => i.sourceId === sourceId && i.bookUrl === bookUrl)
+    if (bookUrl.value) {
+      const item = bookshelf.items.find(i => i.sourceId === sourceId.value && i.bookUrl === bookUrl.value)
       if (item)
         bookshelf.updateProgress(item.id, url, chapterTitle)
     }
@@ -185,12 +195,12 @@ async function loadChapter(url: string, chapterTitle: string) {
 }
 
 async function loadToc() {
-  if (!bookUrl)
+  if (!bookUrl.value)
     return
 
   try {
-    const resolvedTocUrl = tocUrl || bookUrl
-    const toc = await api.getToc(sourceId, resolvedTocUrl)
+    const resolvedTocUrl = tocUrl.value || bookUrl.value
+    const toc = await api.getToc(sourceId.value, resolvedTocUrl)
     chapters.value = toc.chapters
   }
   catch {
@@ -221,25 +231,30 @@ async function autoLoadNextChapter() {
   autoNextLock.value = true
 
   try {
-    const content = await api.getChapter(sourceId, next.url, bookUrl || undefined)
+    const content = await api.getChapter(
+      sourceId.value,
+      next.url,
+      bookUrl.value || undefined,
+      tocUrl.value || undefined,
+    )
     images.value.push(...(content.images ?? []))
     title.value = next.name
 
     skipRouteReload.value = true
     await router.replace({
       name: 'read',
-      query: {
-        sourceId,
+      query: buildReadRouteQuery({
+        sourceId: sourceId.value,
         url: next.url,
-        bookUrl,
-        tocUrl,
-        sourceType: String(sourceType),
+        bookUrl: bookUrl.value,
+        tocUrl: tocUrl.value,
+        sourceType: sourceType.value,
         title: next.name,
-      },
+      }),
     })
 
-    if (bookUrl) {
-      const item = bookshelf.items.find(i => i.sourceId === sourceId && i.bookUrl === bookUrl)
+    if (bookUrl.value) {
+      const item = bookshelf.items.find(i => i.sourceId === sourceId.value && i.bookUrl === bookUrl.value)
       if (item)
         bookshelf.updateProgress(item.id, next.url, next.name)
     }
@@ -253,8 +268,8 @@ async function autoLoadNextChapter() {
 }
 
 function goBack() {
-  if (bookUrl) {
-    router.push({ name: 'book', query: { sourceId, url: bookUrl } })
+  if (bookUrl.value) {
+    router.push({ name: 'book', query: { sourceId: sourceId.value, url: bookUrl.value } })
     return
   }
   router.back()
@@ -264,14 +279,14 @@ function openChapter(chapter: ChapterItem) {
   showToc.value = false
   router.replace({
     name: 'read',
-    query: {
-      sourceId,
+    query: buildReadRouteQuery({
+      sourceId: sourceId.value,
       url: chapter.url,
-      bookUrl,
-      tocUrl,
-      sourceType: String(sourceType),
+      bookUrl: bookUrl.value,
+      tocUrl: tocUrl.value,
+      sourceType: sourceType.value,
       title: chapter.name,
-    },
+    }),
   })
 }
 
@@ -416,7 +431,7 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 watch(
-  () => [route.query.url, route.query.title],
+  () => [routeParams.value.chapterUrl, routeParams.value.title] as const,
   async ([url, chapterTitle]) => {
     if (!url)
       return
@@ -424,19 +439,19 @@ watch(
       skipRouteReload.value = false
       return
     }
-    await loadChapter(String(url), String(chapterTitle ?? '阅读'))
+    await loadChapter(url, chapterTitle || '阅读')
   },
 )
 
 onMounted(async () => {
-  if (!sourceId || !chapterUrl) {
+  if (!sourceId.value || !chapterUrl.value) {
     error.value = '缺少章节参数'
     loading.value = false
     return
   }
 
   await Promise.all([
-    loadChapter(chapterUrl, title.value),
+    loadChapter(chapterUrl.value, routeParams.value.title || title.value),
     loadToc(),
   ])
   await refreshCacheStatus()
