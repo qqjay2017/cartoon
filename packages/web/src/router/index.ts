@@ -9,8 +9,8 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'search', component: SearchPage },
     { path: '/bookshelf', name: 'bookshelf', component: BookshelfPage },
-    { path: '/book', name: 'book', component: BookDetailPage },
-    { path: '/read', name: 'read', component: ReaderPage },
+    { path: '/book/:ref', name: 'book', component: BookDetailPage },
+    { path: '/read/:ref/:chapterIndex?', name: 'read', component: ReaderPage },
   ],
 })
 

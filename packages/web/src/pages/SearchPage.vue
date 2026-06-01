@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import type { SearchBook } from '../api/client'
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, proxyImage } from '../api/client'
+import { api, proxyImage, type SearchBook } from '../api/client'
+import { useBookCatalogStore } from '../stores/book-catalog'
 import { useBookshelfStore } from '../stores/bookshelf'
+import { bookRoute } from '../utils/book-route'
 
 const router = useRouter()
 const bookshelf = useBookshelfStore()
+const catalog = useBookCatalogStore()
 
 const keyword = ref('')
 const type = ref<'all' | '0' | '2'>('all')
@@ -34,16 +36,12 @@ async function search() {
 }
 
 function openBook(book: SearchBook) {
-  router.push({
-    name: 'book',
-    query: {
-      sourceId: book.sourceId,
-      url: book.bookUrl,
-    },
-  })
+  const ref = catalog.registerFromSearch(book)
+  router.push(bookRoute(ref))
 }
 
 function addToShelf(book: SearchBook) {
+  catalog.registerFromSearch(book)
   bookshelf.add({
     sourceId: book.sourceId,
     sourceName: book.sourceName,

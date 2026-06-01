@@ -1,35 +1,31 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { proxyImage } from '../api/client'
+import { useBookCatalogStore } from '../stores/book-catalog'
 import { useBookshelfStore } from '../stores/bookshelf'
+import { bookRoute, readRoute } from '../utils/book-route'
 
 const router = useRouter()
 const bookshelf = useBookshelfStore()
+const catalog = useBookCatalogStore()
 
-function openBook(item: { sourceId: string, bookUrl: string }) {
-  router.push({
-    name: 'book',
-    query: {
-      sourceId: item.sourceId,
-      url: item.bookUrl,
-    },
+function openBook(item: typeof bookshelf.items[number]) {
+  catalog.register({
+    sourceId: item.sourceId,
+    sourceName: item.sourceName,
+    sourceType: item.sourceType,
+    bookUrl: item.bookUrl,
+    name: item.name,
+    author: item.author,
+    coverUrl: item.coverUrl,
   })
+  router.push(bookRoute(item.id))
 }
 
-function continueRead(item: typeof bookshelf.items[number]) {
-  if (!item.lastReadChapterUrl)
-    return
-
-  router.push({
-    name: 'read',
-    query: {
-      sourceId: item.sourceId,
-      url: item.lastReadChapterUrl,
-      bookUrl: item.bookUrl,
-      sourceType: String(item.sourceType),
-      title: item.lastReadChapterName ?? '继续阅读',
-    },
-  })
+function continueRead(ref: string) {
+  const progress = catalog.getReading(ref)
+  const chapterIndex = progress?.chapterIndex ?? 0
+  router.push(readRoute(ref, chapterIndex))
 }
 </script>
 
@@ -51,8 +47,8 @@ function continueRead(item: typeof bookshelf.items[number]) {
           <div class="actions">
             <button class="primary" @click="openBook(item)">详情</button>
             <button
-              v-if="item.lastReadChapterUrl"
-              @click="continueRead(item)"
+              v-if="item.lastReadChapterUrl || catalog.getReading(item.id)"
+              @click="continueRead(item.id)"
             >
               继续阅读
             </button>

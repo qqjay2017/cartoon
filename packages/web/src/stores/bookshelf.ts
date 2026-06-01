@@ -1,12 +1,22 @@
 import type { BookshelfItem } from '@cartoon/core'
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
+import { createBookRef, isLegacyBookId, refFromLegacyId } from '../utils/book-ref'
 
 const STORAGE_KEY = 'cartoon-bookshelf'
 
+function migrateItem(item: BookshelfItem): BookshelfItem {
+  if (!isLegacyBookId(item.id))
+    return item
+  const ref = refFromLegacyId(item.id)
+  if (!ref)
+    return item
+  return { ...item, id: ref }
+}
+
 function loadItems(): BookshelfItem[] {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as BookshelfItem[]
+    return (JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as BookshelfItem[]).map(migrateItem)
   }
   catch {
     return []
@@ -23,11 +33,12 @@ export const useBookshelfStore = defineStore('bookshelf', () => {
   const count = computed(() => items.value.length)
 
   function makeId(sourceId: string, bookUrl: string) {
-    return `${sourceId}::${bookUrl}`
+    return createBookRef(sourceId, bookUrl)
   }
 
   function has(sourceId: string, bookUrl: string) {
-    return items.value.some(item => item.id === makeId(sourceId, bookUrl))
+    const id = makeId(sourceId, bookUrl)
+    return items.value.some(item => item.id === id)
   }
 
   function add(item: Omit<BookshelfItem, 'id' | 'addedAt'>) {
@@ -54,5 +65,5 @@ export const useBookshelfStore = defineStore('bookshelf', () => {
     }
   }
 
-  return { items, count, has, add, remove, updateProgress }
+  return { items, count, has, add, remove, updateProgress, makeId }
 })

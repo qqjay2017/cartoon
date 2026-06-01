@@ -3,18 +3,21 @@ import type { ChapterItem } from '../api/client'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, proxyImage, type BookCacheStatus } from '../api/client'
+import { useBookCatalogStore } from '../stores/book-catalog'
 import { useBookshelfStore } from '../stores/bookshelf'
 import { useReaderSettingsStore, type ReaderTheme } from '../stores/reader-settings'
-import { buildReadRouteQuery, parseReadRouteQuery } from '../utils/route-query'
+import { bookRoute, readRoute } from '../utils/book-route'
 
 const route = useRoute()
 const router = useRouter()
 const bookshelf = useBookshelfStore()
+const catalog = useBookCatalogStore()
 const settings = useReaderSettingsStore()
 
-const routeParams = computed(() => parseReadRouteQuery(route.query))
+const bookRef = computed(() => String(route.params.ref ?? ''))
+const catalogBook = computed(() => catalog.get(bookRef.value))
 
-const title = ref(routeParams.value.title || '阅读')
+const title = ref('阅读')
 const text = ref('')
 const images = ref<string[]>([])
 const chapters = ref<ChapterItem[]>([])
@@ -31,11 +34,17 @@ const cacheStatus = ref<BookCacheStatus | null>(null)
 const cacheHint = ref('')
 let cachePollTimer: ReturnType<typeof setInterval> | undefined
 
-const sourceId = computed(() => routeParams.value.sourceId)
-const chapterUrl = computed(() => routeParams.value.chapterUrl)
-const bookUrl = computed(() => routeParams.value.bookUrl)
-const tocUrl = computed(() => routeParams.value.tocUrl)
-const sourceType = computed(() => routeParams.value.sourceType)
+const sourceId = computed(() => catalogBook.value?.sourceId ?? '')
+const bookUrl = computed(() => catalogBook.value?.bookUrl ?? '')
+const tocUrl = computed(() => catalogBook.value?.tocUrl ?? bookUrl.value)
+const sourceType = computed(() => catalogBook.value?.sourceType ?? 0)
+
+const chapterIndex = computed(() => {
+  const raw = route.params.chapterIndex
+  if (raw !== undefined && raw !== '')
+    return Number(raw)
+  return catalog.getReading(bookRef.value)?.chapterIndex ?? 0
+})
 
 const isComic = computed(() => sourceType.value === 2)
 const isWebtoon = computed(() => isComic.value && settings.comicMode === 'webtoon')
@@ -44,14 +53,10 @@ const isPagedComic = computed(() => isComic.value && settings.comicMode === 'pag
 const isNovelPaged = computed(() => !isComic.value && settings.novelMode === 'paged')
 const isRtl = computed(() => settings.pageDirection === 'rtl')
 
-const currentChapterIndex = computed(() =>
-  chapters.value.findIndex(ch =>
-    ch.url === chapterUrl.value || normalizeUrl(ch.url) === normalizeUrl(chapterUrl.value),
-  ),
-)
-const hasPrevChapter = computed(() => currentChapterIndex.value > 0)
+const currentChapterIndex = chapterIndex
+const hasPrevChapter = computed(() => chapterIndex.value > 0)
 const hasNextChapter = computed(() =>
-  currentChapterIndex.value >= 0 && currentChapterIndex.value < chapters.value.length - 1,
+  chapterIndex.value >= 0 && chapterIndex.value < chapters.value.length - 1,
 )
 
 const imageFitClass = computed(() => {
@@ -90,12 +95,61 @@ const themeOptions: Array<{ id: ReaderTheme, label: string, preview: string }> =
   { id: 'night', label: '夜间', preview: 'theme-night-preview' },
 ]
 
-function normalizeUrl(url: string) {
-  try {
-    return new URL(url, window.location.origin).href
+function saveReadingProgress(index: number, chapterUrl: string, chapterName: string) {
+  catalog.setReading(bookRef.value, {
+    chapterIndex: index,
+    chapterUrl,
+    chapterName,
+  })
+  const item = bookshelf.items.find(i => i.id === bookRef.value)
+  if (item)
+    bookshelf.updateProgress(item.id, chapterUrl, chapterName)
+}
+
+async function loadChapterByIndex(index: number, append = false) {
+  const chapter = chapters.value[index]
+  if (!chapter)
+    return
+
+  if (!append)
+    loading.value = true
+  error.value = ''
+  if (!append) {
+    pageIndex.value = 0
+    scrollProgress.value = 0
   }
-  catch {
-    return url
+
+  try {
+    const content = await api.getChapter(
+      sourceId.value,
+      chapter.url,
+      bookUrl.value,
+      tocUrl.value,
+    )
+    if (append)
+      images.value.push(...(content.images ?? []))
+    else {
+      text.value = content.text ?? ''
+      images.value = content.images ?? []
+    }
+    title.value = chapter.name
+    saveReadingProgress(index, chapter.url, chapter.name)
+
+    if (isComic.value)
+      triggerComicPrefetch(chapter.url)
+  }
+  catch (e) {
+    error.value = e instanceof Error ? e.message : '加载失败'
+  }
+  finally {
+    loading.value = false
+    autoNextLock.value = false
+    if (!append) {
+      requestAnimationFrame(() => {
+        if (isWebtoon.value && readerBodyRef.value)
+          readerBodyRef.value.scrollTop = 0
+      })
+    }
   }
 }
 
@@ -155,57 +209,22 @@ async function cacheAllComic() {
   }
 }
 
-async function loadChapter(url: string, chapterTitle: string) {
-  loading.value = true
-  error.value = ''
-  pageIndex.value = 0
-  scrollProgress.value = 0
-
-  try {
-    const content = await api.getChapter(
-      sourceId.value,
-      url,
-      bookUrl.value || undefined,
-      tocUrl.value || undefined,
-    )
-    text.value = content.text ?? ''
-    images.value = content.images ?? []
-    title.value = chapterTitle
-
-    if (isComic.value && bookUrl.value)
-      triggerComicPrefetch(url)
-
-    if (bookUrl.value) {
-      const item = bookshelf.items.find(i => i.sourceId === sourceId.value && i.bookUrl === bookUrl.value)
-      if (item)
-        bookshelf.updateProgress(item.id, url, chapterTitle)
-    }
-  }
-  catch (e) {
-    error.value = e instanceof Error ? e.message : '加载失败'
-  }
-  finally {
-    loading.value = false
-    autoNextLock.value = false
-    requestAnimationFrame(() => {
-      if (isWebtoon.value && readerBodyRef.value)
-        readerBodyRef.value.scrollTop = 0
-    })
-  }
-}
-
 async function loadToc() {
   if (!bookUrl.value)
     return
 
   try {
-    const resolvedTocUrl = tocUrl.value || bookUrl.value
-    const toc = await api.getToc(sourceId.value, resolvedTocUrl)
+    const toc = await api.getToc(sourceId.value, tocUrl.value)
     chapters.value = toc.chapters
   }
   catch {
     chapters.value = []
   }
+}
+
+function navigateToChapter(index: number) {
+  showToc.value = false
+  router.replace(readRoute(bookRef.value, index))
 }
 
 function updateScrollProgress() {
@@ -223,41 +242,16 @@ function updateScrollProgress() {
 }
 
 async function autoLoadNextChapter() {
-  const nextIndex = currentChapterIndex.value + 1
+  const nextIndex = chapterIndex.value + 1
   if (nextIndex >= chapters.value.length || autoNextLock.value || loading.value)
     return
 
-  const next = chapters.value[nextIndex]!
   autoNextLock.value = true
+  skipRouteReload.value = true
 
   try {
-    const content = await api.getChapter(
-      sourceId.value,
-      next.url,
-      bookUrl.value || undefined,
-      tocUrl.value || undefined,
-    )
-    images.value.push(...(content.images ?? []))
-    title.value = next.name
-
-    skipRouteReload.value = true
-    await router.replace({
-      name: 'read',
-      query: buildReadRouteQuery({
-        sourceId: sourceId.value,
-        url: next.url,
-        bookUrl: bookUrl.value,
-        tocUrl: tocUrl.value,
-        sourceType: sourceType.value,
-        title: next.name,
-      }),
-    })
-
-    if (bookUrl.value) {
-      const item = bookshelf.items.find(i => i.sourceId === sourceId.value && i.bookUrl === bookUrl.value)
-      if (item)
-        bookshelf.updateProgress(item.id, next.url, next.name)
-    }
+    await loadChapterByIndex(nextIndex, true)
+    await router.replace(readRoute(bookRef.value, nextIndex))
   }
   catch {
     // ignore auto load failure
@@ -268,38 +262,25 @@ async function autoLoadNextChapter() {
 }
 
 function goBack() {
-  if (bookUrl.value) {
-    router.push({ name: 'book', query: { sourceId: sourceId.value, url: bookUrl.value } })
-    return
-  }
-  router.back()
+  router.push(bookRoute(bookRef.value))
 }
 
 function openChapter(chapter: ChapterItem) {
-  showToc.value = false
-  router.replace({
-    name: 'read',
-    query: buildReadRouteQuery({
-      sourceId: sourceId.value,
-      url: chapter.url,
-      bookUrl: bookUrl.value,
-      tocUrl: tocUrl.value,
-      sourceType: sourceType.value,
-      title: chapter.name,
-    }),
-  })
+  const index = chapters.value.findIndex(ch => ch.url === chapter.url)
+  if (index >= 0)
+    navigateToChapter(index)
 }
 
 function prevChapter() {
   if (!hasPrevChapter.value)
     return
-  openChapter(chapters.value[currentChapterIndex.value - 1]!)
+  navigateToChapter(chapterIndex.value - 1)
 }
 
 function nextChapter() {
   if (!hasNextChapter.value)
     return
-  openChapter(chapters.value[currentChapterIndex.value + 1]!)
+  navigateToChapter(chapterIndex.value + 1)
 }
 
 function prevPage() {
@@ -431,31 +412,44 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 watch(
-  () => [routeParams.value.chapterUrl, routeParams.value.title] as const,
-  async ([url, chapterTitle]) => {
-    if (!url)
+  () => [bookRef.value, chapterIndex.value] as const,
+  async ([ref, index]) => {
+    if (!ref || !catalog.get(ref))
       return
     if (skipRouteReload.value) {
       skipRouteReload.value = false
       return
     }
-    await loadChapter(url, chapterTitle || '阅读')
+    if (!chapters.value.length)
+      return
+    await loadChapterByIndex(index)
   },
 )
 
 onMounted(async () => {
-  if (!sourceId.value || !chapterUrl.value) {
-    error.value = '缺少章节参数'
+  if (!catalogBook.value) {
+    error.value = '书籍不存在，请从搜索页重新打开'
     loading.value = false
     return
   }
 
-  await Promise.all([
-    loadChapter(chapterUrl.value, routeParams.value.title || title.value),
-    loadToc(),
-  ])
-  await refreshCacheStatus()
+  if (!catalogBook.value.tocUrl) {
+    try {
+      const detail = await api.getBook(sourceId.value, bookUrl.value)
+      catalog.update(bookRef.value, { tocUrl: detail.tocUrl, name: detail.name })
+    }
+    catch {
+      // ignore
+    }
+  }
 
+  await loadToc()
+
+  const index = Math.min(Math.max(chapterIndex.value, 0), Math.max(chapters.value.length - 1, 0))
+  if (chapters.value.length)
+    await loadChapterByIndex(index)
+
+  await refreshCacheStatus()
   window.addEventListener('keydown', onKeydown)
 })
 

@@ -11,11 +11,16 @@ import {
   type DownloadFormat,
 } from '../api/client'
 import { useBookshelfStore } from '../stores/bookshelf'
-import { buildReadRouteQuery } from '../utils/route-query'
+import { useBookCatalogStore } from '../stores/book-catalog'
+import { readRoute } from '../utils/book-route'
 
 const route = useRoute()
 const router = useRouter()
 const bookshelf = useBookshelfStore()
+const catalog = useBookCatalogStore()
+
+const bookRef = computed(() => String(route.params.ref ?? ''))
+const catalogBook = computed(() => catalog.get(bookRef.value))
 
 const detail = ref<BookDetailResponse | null>(null)
 const chapters = ref<ChapterItem[]>([])
@@ -31,8 +36,8 @@ const cacheError = ref('')
 const clearConfirmStep = ref(0)
 let cachePollTimer: ReturnType<typeof setInterval> | undefined
 
-const sourceId = String(route.query.sourceId ?? '')
-const bookUrl = String(route.query.url ?? '')
+const sourceId = computed(() => catalogBook.value?.sourceId ?? '')
+const bookUrl = computed(() => catalogBook.value?.bookUrl ?? '')
 
 const isComic = computed(() => detail.value?.sourceType === 2)
 
@@ -67,7 +72,7 @@ async function refreshCacheStatus() {
     return
 
   try {
-    cacheStatus.value = await api.getCacheStatus(sourceId, bookUrl, chapters.value.length)
+    cacheStatus.value = await api.getCacheStatus(sourceId.value, bookUrl.value, chapters.value.length)
     if (cacheStatus.value.caching) {
       if (!cachePollTimer) {
         cachePollTimer = setInterval(refreshCacheStatus, 2000)
@@ -94,15 +99,21 @@ async function loadCacheConfig() {
 }
 
 onMounted(async () => {
-  if (!sourceId || !bookUrl) {
-    error.value = '缺少书籍参数'
+  if (!catalogBook.value) {
+    error.value = '书籍不存在，请从搜索页重新打开'
     loading.value = false
     return
   }
 
   try {
-    detail.value = await api.getBook(sourceId, bookUrl)
-    const toc = await api.getToc(sourceId, detail.value.tocUrl ?? bookUrl)
+    detail.value = await api.getBook(sourceId.value, bookUrl.value)
+    catalog.update(bookRef.value, {
+      name: detail.value.name,
+      author: detail.value.author,
+      coverUrl: detail.value.coverUrl,
+      tocUrl: detail.value.tocUrl,
+    })
+    const toc = await api.getToc(sourceId.value, detail.value.tocUrl ?? bookUrl.value)
     chapters.value = toc.chapters
     await Promise.all([loadCacheConfig(), refreshCacheStatus()])
   }
@@ -123,6 +134,17 @@ function addToShelf() {
   if (!detail.value)
     return
 
+  catalog.register({
+    sourceId: detail.value.sourceId,
+    sourceName: detail.value.sourceName,
+    sourceType: detail.value.sourceType,
+    bookUrl: detail.value.bookUrl,
+    name: detail.value.name,
+    author: detail.value.author,
+    coverUrl: detail.value.coverUrl,
+    tocUrl: detail.value.tocUrl,
+  })
+
   bookshelf.add({
     sourceId: detail.value.sourceId,
     sourceName: detail.value.sourceName,
@@ -134,18 +156,13 @@ function addToShelf() {
   })
 }
 
-function readChapter(chapter: ChapterItem) {
-  router.push({
-    name: 'read',
-    query: buildReadRouteQuery({
-      sourceId,
-      url: chapter.url,
-      bookUrl,
-      tocUrl: detail.value?.tocUrl ?? bookUrl,
-      sourceType: detail.value?.sourceType ?? 0,
-      title: chapter.name,
-    }),
+function readChapter(chapter: ChapterItem, index: number) {
+  catalog.setReading(bookRef.value, {
+    chapterIndex: index,
+    chapterUrl: chapter.url,
+    chapterName: chapter.name,
   })
+  router.push(readRoute(bookRef.value, index))
 }
 
 async function downloadBook() {
@@ -185,7 +202,7 @@ async function cacheAll() {
   cacheMessage.value = ''
 
   try {
-    const result = await api.cacheAll(sourceId, bookUrl)
+    const result = await api.cacheAll(sourceId.value, bookUrl.value)
     cacheMessage.value = result.alreadyRunning ? '缓存任务已在进行中' : '已开始缓存全部章节'
     await refreshCacheStatus()
   }
@@ -203,7 +220,7 @@ async function clearCache() {
 
   cacheError.value = ''
   try {
-    await api.clearCache(sourceId, bookUrl)
+    await api.clearCache(sourceId.value, bookUrl.value)
     cacheMessage.value = '缓存已清空'
     clearConfirmStep.value = 0
     await refreshCacheStatus()
@@ -243,6 +260,7 @@ async function saveCacheDir() {
       <div style="flex: 1; min-width: 240px;">
         <h2>{{ detail.name }}</h2>
         <p v-if="detail.author" class="meta">作者：{{ detail.author }}</p>
+        <p class="meta">书源：{{ detail.sourceName }}</p>
         <p v-if="detail.kind" class="meta">分类：{{ detail.kind }}</p>
         <p v-if="detail.lastChapter" class="meta">最新章节：{{ detail.lastChapter }}</p>
         <p v-if="chapters.length" class="meta">共 {{ chapters.length }} 章</p>
@@ -298,11 +316,11 @@ async function saveCacheDir() {
     <h3 style="margin-top: 28px;">目录</h3>
     <div class="chapter-list">
       <button
-        v-for="chapter in chapters"
+        v-for="(chapter, index) in chapters"
         :key="chapter.url"
         class="chapter-item"
         style="width: 100%; text-align: left; background: none; color: inherit; cursor: pointer;"
-        @click="readChapter(chapter)"
+        @click="readChapter(chapter, index)"
       >
         <span>{{ chapter.name }}</span>
         <span v-if="chapter.updateTime" class="meta">{{ chapter.updateTime }}</span>
