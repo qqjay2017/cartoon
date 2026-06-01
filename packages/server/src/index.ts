@@ -7,11 +7,13 @@ import {
   loadSourcesFromDir,
   SourceRegistry,
   type BinaryFetcher,
+  type DownloadFormat,
   type Fetcher,
 } from '@cartoon/core'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { DownloadJobManager } from './download-jobs.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(__dirname, '../../..')
@@ -24,7 +26,10 @@ const defaultHeaders = {
 
 const fetcher: Fetcher = async (url, options = {}) => {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), options.timeout ?? 15000)
+  const timeoutMs = options.timeout ?? 60000
+  const timeout = timeoutMs > 0
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : undefined
 
   try {
     const response = await fetch(url, {
@@ -38,13 +43,17 @@ const fetcher: Fetcher = async (url, options = {}) => {
     return await response.text()
   }
   finally {
-    clearTimeout(timeout)
+    if (timeout)
+      clearTimeout(timeout)
   }
 }
 
 const binaryFetcher: BinaryFetcher = async (url, options = {}) => {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), options.timeout ?? 30000)
+  const timeoutMs = options.timeout ?? 180000
+  const timeout = timeoutMs > 0
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : undefined
 
   try {
     const response = await fetch(url, {
@@ -66,7 +75,8 @@ const binaryFetcher: BinaryFetcher = async (url, options = {}) => {
     }
   }
   finally {
-    clearTimeout(timeout)
+    if (timeout)
+      clearTimeout(timeout)
   }
 }
 
@@ -75,6 +85,8 @@ const bookService = new BookService({ fetcher })
 const comicCache = new ComicCacheService({ projectRoot: rootDir, bookService, binaryFetcher })
 await comicCache.init()
 const downloadService = new DownloadService(bookService, binaryFetcher, comicCache)
+const downloadJobs = new DownloadJobManager(join(rootDir, 'cache', 'downloads'))
+await downloadJobs.init()
 const registry = new SourceRegistry(sources, bookService)
 
 const app = new Hono()
@@ -202,6 +214,60 @@ function fixMgsearcherChapterUrl(
   return url
 }
 
+app.post('/api/download/jobs', async (c) => {
+  const body = await c.req.json<{ sourceId?: string, bookUrl?: string, format?: DownloadFormat }>()
+  if (!body.sourceId || !body.bookUrl || !body.format)
+    return c.json({ error: 'missing sourceId, bookUrl or format' }, 400)
+  if (!['epub', 'txt', 'cbz', 'folder'].includes(body.format))
+    return c.json({ error: 'invalid format' }, 400)
+
+  const source = registry.get(body.sourceId)
+  if (!source)
+    return c.json({ error: 'source not found' }, 404)
+
+  const jobId = downloadJobs.start(onProgress =>
+    downloadService.download({
+      source,
+      bookUrl: body.bookUrl!,
+      format: body.format!,
+      onProgress,
+    }),
+  )
+
+  return c.json({ jobId })
+})
+
+app.get('/api/download/jobs/:id', (c) => {
+  const job = downloadJobs.get(c.req.param('id'))
+  if (!job)
+    return c.json({ error: 'job not found' }, 404)
+
+  return c.json({
+    id: job.id,
+    status: job.status,
+    progress: job.progress,
+    error: job.error,
+    filename: job.filename,
+  })
+})
+
+app.get('/api/download/jobs/:id/file', async (c) => {
+  const jobId = c.req.param('id')
+  const file = await downloadJobs.readFile(jobId)
+  if (!file)
+    return c.json({ error: 'file not ready' }, 404)
+
+  const response = new Response(new Uint8Array(file.data), {
+    headers: {
+      'Content-Type': file.mimeType,
+      'Content-Disposition': encodeContentDisposition(file.filename),
+    },
+  })
+
+  void downloadJobs.cleanup(jobId)
+  return response
+})
+
 app.get('/api/download', async (c) => {
   const sourceId = c.req.query('sourceId')
   const bookUrl = c.req.query('url')
@@ -220,7 +286,7 @@ app.get('/api/download', async (c) => {
     const result = await downloadService.download({
       source,
       bookUrl,
-      format,
+      format: format as DownloadFormat,
       start: start === undefined ? undefined : Number(start),
       end: end === undefined ? undefined : Number(end),
     })

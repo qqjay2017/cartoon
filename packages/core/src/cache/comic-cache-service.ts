@@ -2,10 +2,12 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { imageExtFromUrl } from '../download/cbz-builder.js'
+import type { CbzPageInput } from '../download/cbz-builder.js'
 import type { BookService } from '../engine/book-service.js'
 import type { BookSource, Chapter } from '../types/book-source.js'
 import type { BinaryFetcher } from '../utils/http.js'
 import { hashKey, normalizeUrl, sanitizePathSegment } from './cache-keys.js'
+import { mapPool } from '../utils/async-pool.js'
 
 export interface ComicCacheConfigFile {
   comicDir?: string
@@ -220,35 +222,30 @@ export class ComicCacheService {
     return { data, contentType: mimeTypeForExt(file.split('.').pop() ?? 'jpg') }
   }
 
-  async cacheChapter(
-    source: BookSource & { id: string },
+  async writeChapterPages(
+    sourceId: string,
     bookUrl: string,
     chapter: Chapter,
+    pages: CbzPageInput[],
     bookName?: string,
-  ): Promise<boolean> {
-    if (await this.hasChapter(source.id, bookUrl, chapter.url))
-      return true
+  ): Promise<void> {
+    if (!pages.length)
+      return
 
-    const content = await this.options.bookService.getChapterContent(source, chapter.url)
-    const imageUrls = content.images ?? []
-    if (!imageUrls.length)
-      return false
-
-    const chapterDir = this.getChapterDir(source.id, bookUrl, chapter.url)
+    const chapterDir = this.getChapterDir(sourceId, bookUrl, chapter.url)
     await mkdir(chapterDir, { recursive: true })
 
     const files: string[] = []
-    for (let i = 0; i < imageUrls.length; i++) {
-      const imageUrl = imageUrls[i]!
-      const fetched = await this.options.binaryFetcher(imageUrl)
-      const ext = imageExtFromUrl(imageUrl, fetched.contentType)
+    for (let i = 0; i < pages.length; i++) {
+      const page = pages[i]!
+      const ext = page.ext.replace(/^\./, '') || 'jpg'
       const fileName = `${String(i + 1).padStart(3, '0')}.${ext}`
-      await writeFile(join(chapterDir, fileName), fetched.data)
+      await writeFile(join(chapterDir, fileName), page.data)
       files.push(fileName)
     }
 
-    const meta = await this.readBookMeta(source.id, bookUrl) ?? {
-      sourceId: source.id,
+    const meta = await this.readBookMeta(sourceId, bookUrl) ?? {
+      sourceId,
       bookUrl: normalizeUrl(bookUrl),
       updatedAt: new Date().toISOString(),
       chapters: {},
@@ -263,7 +260,32 @@ export class ComicCacheService {
       cachedAt: new Date().toISOString(),
     }
 
-    await this.writeBookMeta(source.id, bookUrl, meta)
+    await this.writeBookMeta(sourceId, bookUrl, meta)
+  }
+
+  async cacheChapter(
+    source: BookSource & { id: string },
+    bookUrl: string,
+    chapter: Chapter,
+    bookName?: string,
+  ): Promise<boolean> {
+    if (await this.hasChapter(source.id, bookUrl, chapter.url))
+      return true
+
+    const content = await this.options.bookService.getChapterContent(source, chapter.url)
+    const imageUrls = content.images ?? []
+    if (!imageUrls.length)
+      return false
+
+    const pages = await mapPool(imageUrls, 6, async (imageUrl) => {
+      const fetched = await this.options.binaryFetcher(imageUrl)
+      return {
+        data: fetched.data,
+        ext: imageExtFromUrl(imageUrl, fetched.contentType),
+      }
+    })
+
+    await this.writeChapterPages(source.id, bookUrl, chapter, pages, bookName)
     return true
   }
 

@@ -6,3 +6,4 @@ dist
 cache/*
 !cache/.gitkeep
 !cache/config.json
+cache/downloads/

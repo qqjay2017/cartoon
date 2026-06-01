@@ -25,6 +25,55 @@ async function getJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>
 }
 
+function isTransientFetchError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError')
+    return true
+  if (error instanceof TypeError)
+    return true
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase()
+    return msg.includes('aborted')
+      || msg.includes('failed to fetch')
+      || msg.includes('network')
+      || msg.includes('load failed')
+  }
+  return false
+}
+
+function normalizeFetchError(error: unknown): Error {
+  if (isTransientFetchError(error))
+    return new Error('网络连接暂时中断，后台任务可能仍在进行，请稍候…')
+  if (error instanceof Error)
+    return error
+  return new Error(String(error))
+}
+
+async function fetchJsonWithRetry<T>(url: string, retries = 5): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await getJson<T>(url)
+    }
+    catch (error) {
+      lastError = error
+      if (!isTransientFetchError(error) || attempt >= retries)
+        throw normalizeFetchError(error)
+      await new Promise(resolve => setTimeout(resolve, 1000 + attempt * 500))
+    }
+  }
+  throw normalizeFetchError(lastError)
+}
+
+function triggerBrowserDownload(url: string, filename: string) {
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
 export function proxyImage(url?: string) {
   if (!url)
     return ''
@@ -49,6 +98,23 @@ export interface BookCacheStatus {
   cachedChapters: number
   caching: boolean
   progress?: CacheJobProgress
+}
+
+export interface DownloadProgress {
+  phase: 'toc' | 'chapters' | 'pack'
+  current: number
+  total: number
+  message?: string
+  fromCache?: boolean
+  cachedChapters?: number
+}
+
+export interface DownloadJobSnapshot {
+  id: string
+  status: 'running' | 'done' | 'error'
+  progress?: DownloadProgress
+  error?: string
+  filename?: string
 }
 
 export const api = {
@@ -112,6 +178,67 @@ export const api = {
     const filename = decodeURIComponent(filenameMatch?.[1] ?? filenameMatch?.[2] ?? `download.${format}`)
 
     return { blob, filename }
+  },
+
+  startDownloadJob(sourceId: string, bookUrl: string, format: DownloadFormat) {
+    return fetch('/api/download/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId, bookUrl, format }),
+    }).then(async (response) => {
+      if (!response.ok)
+        throw new Error(await response.text())
+      return response.json() as Promise<{ jobId: string }>
+    })
+  },
+
+  getDownloadJob(jobId: string) {
+    return fetchJsonWithRetry<DownloadJobSnapshot>(`/api/download/jobs/${jobId}`)
+  },
+
+  triggerDownloadJobFile(jobId: string, filename: string) {
+    triggerBrowserDownload(`/api/download/jobs/${jobId}/file`, filename)
+  },
+
+  async downloadBookWithProgress(
+    sourceId: string,
+    bookUrl: string,
+    format: DownloadFormat,
+    onProgress: (job: DownloadJobSnapshot) => void,
+  ) {
+    const { jobId } = await this.startDownloadJob(sourceId, bookUrl, format)
+    let lastSnapshot: DownloadJobSnapshot = {
+      id: jobId,
+      status: 'running',
+      progress: { phase: 'toc', current: 0, total: 1, message: '任务已创建' },
+    }
+
+    while (true) {
+      try {
+        const job = await this.getDownloadJob(jobId)
+        lastSnapshot = job
+        onProgress(job)
+
+        if (job.status === 'done') {
+          const filename = job.filename ?? `download.${format}`
+          this.triggerDownloadJobFile(jobId, filename)
+          return { filename }
+        }
+
+        if (job.status === 'error')
+          throw new Error(job.error ?? '下载失败')
+      }
+      catch (error) {
+        if (isTransientFetchError(error)) {
+          onProgress(lastSnapshot)
+          await new Promise(resolve => setTimeout(resolve, 1500))
+          continue
+        }
+        throw normalizeFetchError(error)
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 800))
+    }
   },
 
   getCacheConfig() {

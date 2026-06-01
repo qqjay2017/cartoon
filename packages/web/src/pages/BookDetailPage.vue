@@ -9,6 +9,7 @@ import {
   type BookCacheStatus,
   type BookDetailResponse,
   type DownloadFormat,
+  type DownloadJobSnapshot,
 } from '../api/client'
 import { useBookshelfStore } from '../stores/bookshelf'
 import { useBookCatalogStore } from '../stores/book-catalog'
@@ -29,6 +30,34 @@ const error = ref('')
 const downloading = ref(false)
 const downloadError = ref('')
 const downloadFormat = ref<DownloadFormat>('epub')
+const downloadJob = ref<DownloadJobSnapshot | null>(null)
+
+const downloadPercent = computed(() => {
+  const progress = downloadJob.value?.progress
+  if (!progress)
+    return 0
+  if (progress.phase === 'toc')
+    return 8
+  if (progress.phase === 'pack')
+    return 98
+  if (!progress.total)
+    return 10
+  return Math.min(95, Math.round(10 + (progress.current / progress.total) * 85))
+})
+
+const downloadStatusText = computed(() => {
+  const progress = downloadJob.value?.progress
+  if (!progress)
+    return '准备整本下载...'
+  if (progress.phase === 'toc')
+    return progress.message ?? '获取目录'
+  if (progress.phase === 'pack')
+    return progress.message ?? '正在打包'
+  const cacheHint = progress.cachedChapters
+    ? ` · 已用缓存 ${progress.cachedChapters} 章`
+    : ''
+  return `${progress.current}/${progress.total} 章 · ${progress.message ?? ''}${cacheHint}`
+})
 const cacheStatus = ref<BookCacheStatus | null>(null)
 const cacheDirInput = ref('')
 const cacheMessage = ref('')
@@ -171,26 +200,26 @@ async function downloadBook() {
 
   downloading.value = true
   downloadError.value = ''
+  downloadJob.value = null
 
   try {
-    const { blob, filename } = await api.downloadBook(
+    await api.downloadBookWithProgress(
       detail.value.sourceId,
       detail.value.bookUrl,
       downloadFormat.value,
+      (job) => {
+        downloadJob.value = job
+      },
     )
-
-    const objectUrl = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = objectUrl
-    anchor.download = filename
-    anchor.click()
-    URL.revokeObjectURL(objectUrl)
   }
   catch (e) {
     downloadError.value = e instanceof Error ? e.message : '下载失败'
   }
   finally {
     downloading.value = false
+    downloadJob.value = null
+    if (isComic.value)
+      await refreshCacheStatus()
   }
 }
 
@@ -274,12 +303,18 @@ async function saveCacheDir() {
             </option>
           </select>
           <button :disabled="downloading" @click="downloadBook">
-            {{ downloading ? '打包下载中...' : '下载导出' }}
+            {{ downloading ? `整本导出中 ${downloadPercent}%` : '整本下载导出' }}
           </button>
         </div>
+        <div v-if="downloading" class="download-progress-wrap">
+          <div class="download-progress-bar">
+            <div class="download-progress-fill" :style="{ width: `${downloadPercent}%` }" />
+          </div>
+          <p class="meta">{{ downloadStatusText }}</p>
+        </div>
         <p v-if="downloadError" class="meta" style="color: #f87171; margin-top: 8px;">{{ downloadError }}</p>
-        <p v-else-if="downloading" class="meta" style="margin-top: 8px;">
-          正在抓取全部章节并打包{{ isComic && cacheStatus?.cachedChapters ? '（优先使用本地缓存）' : '' }}，请耐心等待。
+        <p v-else-if="isComic && !downloading && cacheStatus?.cachedChapters" class="meta" style="margin-top: 8px;">
+          导出时将优先读取本地缓存（已缓存 {{ cacheStatus.cachedChapters }}/{{ chapters.length }} 章），缺失章节会自动补全并写入缓存。
         </p>
 
         <div v-if="isComic" class="cache-panel">
@@ -366,5 +401,22 @@ async function saveCacheDir() {
 .actions button.danger {
   color: #f87171;
   border-color: rgba(248, 113, 113, 0.35);
+}
+
+.download-progress-wrap {
+  margin-top: 12px;
+}
+
+.download-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.download-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6ea8fe, #38bdf8);
+  transition: width 0.25s ease;
 }
 </style>

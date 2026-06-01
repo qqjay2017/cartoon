@@ -6,6 +6,8 @@ import { buildTxt, txtFilename } from './txt-builder.js'
 import type { BookService } from '../engine/book-service.js'
 import type { BookSource, Chapter } from '../types/book-source.js'
 import type { BinaryFetcher } from '../utils/http.js'
+import { mapPool } from '../utils/async-pool.js'
+import { withRetry } from '../utils/retry.js'
 
 export type DownloadFormat = 'epub' | 'txt' | 'cbz' | 'folder'
 
@@ -14,6 +16,8 @@ export interface DownloadProgress {
   current: number
   total: number
   message?: string
+  fromCache?: boolean
+  cachedChapters?: number
 }
 
 export interface DownloadOptions {
@@ -30,6 +34,10 @@ export interface DownloadResult {
   filename: string
   mimeType: string
 }
+
+const COMIC_CHAPTER_CONCURRENCY = 3
+const COMIC_IMAGE_CONCURRENCY = 4
+const DOWNLOAD_FETCH_TIMEOUT = 300000
 
 export class DownloadService {
   constructor(
@@ -120,7 +128,13 @@ export class DownloadService {
     if (source.bookSourceType !== 2)
       throw new Error('该书源不是漫画类型，请使用 EPUB 或 TXT 下载')
 
-    const comicChapters = await this.fetchComicChapters(source, bookUrl, chapters, options.onProgress)
+    const comicChapters = await this.fetchComicChapters(
+      source,
+      bookUrl,
+      chapters,
+      detail.name,
+      options.onProgress,
+    )
 
     if (format === 'folder') {
       options.onProgress?.({ phase: 'pack', current: 1, total: 1, message: '打包文件夹' })
@@ -150,51 +164,78 @@ export class DownloadService {
     source: BookSource & { id: string },
     bookUrl: string,
     chapters: Chapter[],
+    bookName: string,
     onProgress?: DownloadOptions['onProgress'],
   ) {
-    const comicChapters = []
+    const results: Array<{ name: string, pages: Array<{ data: Uint8Array, ext: string }> } | null> =
+      new Array(chapters.length).fill(null)
+    let completed = 0
+    let cachedCount = 0
 
-    for (let i = 0; i < chapters.length; i++) {
-      const chapter = chapters[i]!
+    const report = (chapter: Chapter, fromCache: boolean) => {
+      completed++
+      if (fromCache)
+        cachedCount++
       onProgress?.({
         phase: 'chapters',
-        current: i + 1,
+        current: completed,
         total: chapters.length,
-        message: chapter.name,
+        message: fromCache ? `${chapter.name}（本地缓存）` : chapter.name,
+        fromCache,
+        cachedChapters: cachedCount,
       })
-
-      const cachedPages = this.comicCache
-        ? await this.comicCache.readCachedChapterPages(source.id, bookUrl, chapter.url)
-        : null
-
-      if (cachedPages?.length) {
-        comicChapters.push({ name: chapter.name, pages: cachedPages })
-        continue
-      }
-
-      const content = await this.bookService.getChapterContent(source, chapter.url)
-      const images = content.images ?? []
-      const pages = []
-
-      for (const imageUrl of images) {
-        const fetched = await this.fetchImage(imageUrl)
-        pages.push(fetched)
-      }
-
-      comicChapters.push({ name: chapter.name, pages })
     }
 
-    if (!comicChapters.some(ch => ch.pages.length))
+    await mapPool(
+      chapters.map((chapter, index) => ({ chapter, index })),
+      COMIC_CHAPTER_CONCURRENCY,
+      async ({ chapter, index }) => {
+        await withRetry(async () => {
+          const cachedPages = this.comicCache
+            ? await this.comicCache.readCachedChapterPages(source.id, bookUrl, chapter.url)
+            : null
+
+          if (cachedPages?.length) {
+            results[index] = { name: chapter.name, pages: cachedPages }
+            report(chapter, true)
+            return
+          }
+
+          const content = await withRetry(
+            () => this.bookService.getChapterContent(source, chapter.url),
+            { retries: 3, delayMs: 2000 },
+          )
+          const images = content.images ?? []
+          if (!images.length)
+            throw new Error(`章节无图片：${chapter.name}`)
+
+          const pages = await mapPool(images, COMIC_IMAGE_CONCURRENCY, async (imageUrl) =>
+            this.fetchImage(imageUrl),
+          )
+
+          if (pages.length && this.comicCache)
+            await this.comicCache.writeChapterPages(source.id, bookUrl, chapter, pages, bookName)
+
+          results[index] = { name: chapter.name, pages }
+          report(chapter, false)
+        }, { retries: 2, delayMs: 2500 })
+      },
+    )
+
+    const comicChapters = results.filter((item): item is NonNullable<typeof item> => Boolean(item?.pages.length))
+    if (!comicChapters.length)
       throw new Error('未获取到漫画图片')
 
     return comicChapters
   }
 
   private async fetchImage(url: string): Promise<{ data: Uint8Array, ext: string }> {
-    const result = await this.binaryFetcher(url)
-    return {
-      data: result.data,
-      ext: imageExtFromUrl(url, result.contentType),
-    }
+    return withRetry(async () => {
+      const result = await this.binaryFetcher(url, { timeout: DOWNLOAD_FETCH_TIMEOUT })
+      return {
+        data: result.data,
+        ext: imageExtFromUrl(url, result.contentType),
+      }
+    }, { retries: 4, delayMs: 2000 })
   }
 }
