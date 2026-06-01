@@ -14,10 +14,10 @@
       "author": "class.other right@class.s2@tag.a@text",
       "coverUrl": "class.imgBox left@tag.img@src",
       "intro": "class.brief@html",
-      "kind": "class.tips clearfix@tag.a.0@text",
+      "kind": "class.tips clearfix@tag.a@text",
       "lastChapter": "class.news clearfix@tag.a@text",
       "name": "class.other right@class.left@text",
-      "tocUrl": "class.button clearfix@tag.a.0@href",
+      "tocUrl": "class.button clearfix@tag.a@href",
       "wordCount": "class.other right@class.s4@text"
     },
     "ruleContent": {
@@ -36,9 +36,9 @@
       "wordCount": "class.top clearfix@class.s4@text"
     },
     "ruleToc": {
-      "chapterList": "id.chapter",
-      "chapterName": "tag.a@text",
-      "chapterUrl": "tag.a@href"
+      "chapterList": "id.chapter@tag.a",
+      "chapterName": "text",
+      "chapterUrl": "href"
     },
     "searchUrl": "https://www.zbcxw.cn/search.php?key={{key}}",
     "weight": 0

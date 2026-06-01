@@ -64,6 +64,8 @@ function readChapter(chapter: ChapterItem) {
       sourceId,
       url: chapter.url,
       bookUrl,
+      tocUrl: detail.value?.tocUrl ?? bookUrl,
+      sourceType: String(detail.value?.sourceType ?? 0),
       title: chapter.name,
     },
   })

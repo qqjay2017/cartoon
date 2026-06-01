@@ -16,7 +16,7 @@ function openBook(item: { sourceId: string, bookUrl: string }) {
   })
 }
 
-function continueRead(item: { sourceId: string, lastReadChapterUrl?: string }) {
+function continueRead(item: typeof bookshelf.items[number]) {
   if (!item.lastReadChapterUrl)
     return
 
@@ -25,6 +25,9 @@ function continueRead(item: { sourceId: string, lastReadChapterUrl?: string }) {
     query: {
       sourceId: item.sourceId,
       url: item.lastReadChapterUrl,
+      bookUrl: item.bookUrl,
+      sourceType: String(item.sourceType),
+      title: item.lastReadChapterName ?? '继续阅读',
     },
   })
 }
