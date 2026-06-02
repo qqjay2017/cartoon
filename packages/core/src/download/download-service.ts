@@ -1,3 +1,4 @@
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ComicCacheService } from '../cache/comic-cache-service.js'
 import type { NovelCacheService } from '../cache/novel-cache-service.js'
@@ -90,9 +91,22 @@ export class DownloadService {
           intro: detail.intro,
           chapters: novelChapters.map(ch => ({ title: ch.title, text: ch.html })),
         })
+        const filename = txtFilename(detail.name)
+        if (this.novelCache) {
+          const bookDir = this.novelCache.getBookDir(source.id, bookUrl)
+          await mkdir(bookDir, { recursive: true })
+          await writeFile(join(bookDir, filename), data)
+          return {
+            localExport: true,
+            exportDir: bookDir,
+            exportedFiles: [filename],
+            filename,
+            mimeType: 'text/plain; charset=utf-8',
+          }
+        }
         return {
           data,
-          filename: txtFilename(detail.name),
+          filename,
           mimeType: 'text/plain; charset=utf-8',
         }
       }
@@ -101,11 +115,20 @@ export class DownloadService {
 
       let cover: Uint8Array | undefined
       let coverExt = 'jpg'
-      if (detail.coverUrl) {
+      if (this.novelCache) {
+        const cachedCover = await this.novelCache.readCover(source.id, bookUrl)
+        if (cachedCover) {
+          cover = cachedCover.data
+          coverExt = cachedCover.ext
+        }
+      }
+      if (!cover && detail.coverUrl && !detail.coverUrl.startsWith('/api/')) {
         try {
           const fetched = await this.fetchImage(detail.coverUrl)
           cover = fetched.data
           coverExt = fetched.ext
+          if (this.novelCache)
+            await this.novelCache.cacheCover(source.id, bookUrl, detail.coverUrl)
         }
         catch {
           // optional cover
@@ -121,9 +144,23 @@ export class DownloadService {
         chapters: novelChapters,
       })
 
+      const filename = epubFilename(detail.name)
+      if (this.novelCache) {
+        const bookDir = this.novelCache.getBookDir(source.id, bookUrl)
+        await mkdir(bookDir, { recursive: true })
+        await writeFile(join(bookDir, filename), data)
+        return {
+          localExport: true,
+          exportDir: bookDir,
+          exportedFiles: [filename],
+          filename,
+          mimeType: 'application/epub+zip',
+        }
+      }
+
       return {
         data,
-        filename: epubFilename(detail.name),
+        filename,
         mimeType: 'application/epub+zip',
       }
     }

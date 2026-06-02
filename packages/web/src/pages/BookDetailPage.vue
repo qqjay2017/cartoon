@@ -70,6 +70,7 @@ const cacheDirInput = ref('')
 const cacheMessage = ref('')
 const cacheError = ref('')
 const clearConfirmStep = ref(0)
+const reloadingMeta = ref(false)
 let cachePollTimer: ReturnType<typeof setInterval> | undefined
 
 const sourceId = computed(() => catalogBook.value?.sourceId ?? '')
@@ -104,9 +105,6 @@ watch(detail, (value) => {
 }, { immediate: true })
 
 async function refreshCacheStatus() {
-  if (!isComic.value)
-    return
-
   try {
     cacheStatus.value = await api.getCacheStatus(sourceId.value, bookUrl.value, chapters.value.length)
     if (cacheStatus.value.caching) {
@@ -149,7 +147,7 @@ onMounted(async () => {
       coverUrl: detail.value.coverUrl,
       tocUrl: detail.value.tocUrl,
     })
-    const toc = await api.getToc(sourceId.value, detail.value.tocUrl ?? bookUrl.value)
+    const toc = await api.getToc(sourceId.value, bookUrl.value)
     chapters.value = toc.chapters
     await Promise.all([loadCacheConfig(), refreshCacheStatus()])
   }
@@ -222,7 +220,8 @@ async function downloadBook() {
 
     if ('localExport' in result && result.localExport) {
       const files = result.exportedFiles.join('、')
-      downloadMessage.value = `已导出 ${result.exportedFiles.length} 个 CBZ 到 ${result.exportDir}：${files}`
+      const label = isComic.value ? 'CBZ' : DOWNLOAD_FORMAT_LABELS[downloadFormat.value]
+      downloadMessage.value = `已导出 ${result.exportedFiles.length} 个 ${label} 到 ${result.exportDir}：${files}`
     }
   }
   catch (e) {
@@ -231,15 +230,11 @@ async function downloadBook() {
   finally {
     downloading.value = false
     downloadJob.value = null
-    if (isComic.value)
-      await refreshCacheStatus()
+    await refreshCacheStatus()
   }
 }
 
 async function cacheAll() {
-  if (!isComic.value)
-    return
-
   cacheError.value = ''
   cacheMessage.value = ''
 
@@ -278,6 +273,35 @@ function cancelClearCache() {
   cacheMessage.value = ''
 }
 
+async function reloadBookMeta() {
+  if (!detail.value || reloadingMeta.value || isComic.value)
+    return
+
+  reloadingMeta.value = true
+  cacheError.value = ''
+  cacheMessage.value = ''
+
+  try {
+    const result = await api.reloadBookMeta(sourceId.value, bookUrl.value)
+    detail.value = result.book
+    chapters.value = result.chapters
+    catalog.update(bookRef.value, {
+      name: result.book.name,
+      author: result.book.author,
+      coverUrl: result.book.coverUrl,
+      tocUrl: result.book.tocUrl,
+    })
+    cacheMessage.value = '已重载书籍信息、目录与封面'
+    await refreshCacheStatus()
+  }
+  catch (e) {
+    cacheError.value = e instanceof Error ? e.message : '重载失败'
+  }
+  finally {
+    reloadingMeta.value = false
+  }
+}
+
 async function saveCacheDir() {
   cacheError.value = ''
   try {
@@ -296,21 +320,41 @@ async function saveCacheDir() {
 <template>
   <section v-if="loading" class="panel empty">加载中...</section>
   <section v-else-if="error" class="panel empty">{{ error }}</section>
-  <section v-else-if="detail" class="panel">
-    <div style="display: flex; gap: 20px; flex-wrap: wrap;">
-      <div class="card-cover" style="width: 180px; border-radius: 12px;">
-        <img v-if="detail.coverUrl" :src="proxyImage(detail.coverUrl)" :alt="detail.name">
+  <section v-else-if="detail" class="panel book-detail">
+    <div class="book-header">
+      <div class="book-cover">
+        <img
+          v-if="detail.coverUrl"
+          :src="proxyImage(detail.coverUrl)"
+          :alt="detail.name"
+          width="140"
+          height="180"
+        >
       </div>
-      <div style="flex: 1; min-width: 240px;">
-        <h2>{{ detail.name }}</h2>
-        <p v-if="detail.author" class="meta">作者：{{ detail.author }}</p>
-        <p class="meta">书源：{{ detail.sourceName }}</p>
-        <p v-if="detail.kind" class="meta">分类：{{ detail.kind }}</p>
-        <p v-if="detail.lastChapter" class="meta">最新章节：{{ detail.lastChapter }}</p>
-        <p v-if="chapters.length" class="meta">共 {{ chapters.length }} 章</p>
-        <div class="actions">
+      <div class="book-main">
+        <h1 class="book-title">{{ detail.name }}</h1>
+        <p class="book-tags meta">
+          <span v-if="detail.author">作者：{{ detail.author }}</span>
+          <span v-if="detail.wordCount">{{ detail.wordCount }}</span>
+          <span v-if="detail.kind">{{ detail.kind }}</span>
+          <span>书源：{{ detail.sourceName }}</span>
+          <span v-if="chapters.length">共 {{ chapters.length }} 章</span>
+        </p>
+
+        <div v-if="detail.intro" class="book-intro reader-content" v-html="detail.intro" />
+
+        <hr class="book-divider">
+
+        <div class="actions book-actions">
           <button class="primary" @click="addToShelf">
             {{ bookshelf.has(detail.sourceId, detail.bookUrl) ? '已在书架' : '加入书架' }}
+          </button>
+          <button
+            v-if="chapters.length"
+            class="primary"
+            @click="readChapter(chapters[0], 0)"
+          >
+            开始阅读
           </button>
           <select v-model="downloadFormat" class="download-format" :disabled="downloading">
             <option v-for="item in formatOptions" :key="item.value" :value="item.value">
@@ -318,28 +362,41 @@ async function saveCacheDir() {
             </option>
           </select>
           <button :disabled="downloading" @click="downloadBook">
-            {{ downloading ? `导出中 ${downloadPercent}%` : (isComic && downloadFormat === 'cbz' ? '导出 CBZ 到本地' : '整本下载导出') }}
+            {{ downloading ? `导出中 ${downloadPercent}%` : (isComic && downloadFormat === 'cbz' ? '导出 CBZ 到本地' : (!isComic ? '下载到本地缓存' : '整本下载导出')) }}
+          </button>
+          <button v-if="!isComic" :disabled="reloadingMeta || downloading" @click="reloadBookMeta">
+            {{ reloadingMeta ? '重载中...' : '重载配置' }}
           </button>
         </div>
+
         <div v-if="downloading" class="download-progress-wrap">
           <div class="download-progress-bar">
             <div class="download-progress-fill" :style="{ width: `${downloadPercent}%` }" />
           </div>
           <p class="meta">{{ downloadStatusText }}</p>
         </div>
-        <p v-if="downloadError" class="meta" style="color: #f87171; margin-top: 8px;">{{ downloadError }}</p>
-        <p v-else-if="downloadMessage" class="meta" style="margin-top: 8px;">{{ downloadMessage }}</p>
-        <p v-else-if="isComic && downloadFormat === 'cbz'" class="meta" style="margin-top: 8px;">
+        <p v-if="downloadError" class="meta book-hint" style="color: #f87171;">{{ downloadError }}</p>
+        <p v-else-if="downloadMessage" class="meta book-hint">{{ downloadMessage }}</p>
+        <p v-else-if="isComic && downloadFormat === 'cbz'" class="meta book-hint">
           漫画 CBZ 按每 100 章分卷，导出后保存在本地缓存目录，不会触发浏览器下载。
         </p>
-        <p v-else-if="!downloading && cacheStatus?.cachedChapters" class="meta" style="margin-top: 8px;">
+        <p v-else-if="!isComic" class="meta book-hint">
+          小说下载会抓取章节并写入本地缓存目录（cache/novels/书源名/哈希），同时生成 EPUB/TXT，不会触发浏览器下载。
+        </p>
+        <p v-else-if="!downloading && cacheStatus?.cachedChapters" class="meta book-hint">
           导出时将优先读取本地缓存（已缓存 {{ cacheStatus.cachedChapters }}/{{ chapters.length }} 章），缺失章节会并发下载并写入缓存。
         </p>
 
+        <hr v-if="detail.lastChapter" class="book-divider">
+
+        <p v-if="detail.lastChapter" class="meta">
+          最新章节：{{ detail.lastChapter }}
+        </p>
+
         <div class="cache-panel">
-          <h3 style="margin: 20px 0 10px; font-size: 1rem;">本地缓存</h3>
+          <h3 class="cache-panel-title">本地缓存</h3>
           <p v-if="cacheProgressText" class="meta">{{ cacheProgressText }}</p>
-          <div class="actions" style="margin-top: 10px;">
+          <div class="actions cache-actions">
             <button :disabled="cacheStatus?.caching" @click="cacheAll">
               {{ cacheStatus?.caching ? '缓存进行中...' : '缓存全部' }}
             </button>
@@ -364,21 +421,18 @@ async function saveCacheDir() {
             >
             <button @click="saveCacheDir">保存目录</button>
           </div>
-          <p v-if="cacheMessage" class="meta" style="margin-top: 8px;">{{ cacheMessage }}</p>
-          <p v-if="cacheError" class="meta" style="color: #f87171; margin-top: 8px;">{{ cacheError }}</p>
+          <p v-if="cacheMessage" class="meta book-hint">{{ cacheMessage }}</p>
+          <p v-if="cacheError" class="meta book-hint" style="color: #f87171;">{{ cacheError }}</p>
         </div>
-
-        <div v-if="detail.intro" class="reader-content" style="margin-top: 16px;" v-html="detail.intro" />
       </div>
     </div>
 
-    <h3 style="margin-top: 28px;">目录</h3>
+    <h3 class="book-toc-title">目录</h3>
     <div class="chapter-list">
       <button
         v-for="(chapter, index) in chapters"
         :key="chapter.url"
         class="chapter-item"
-        style="width: 100%; text-align: left; background: none; color: inherit; cursor: pointer;"
         @click="readChapter(chapter, index)"
       >
         <span>{{ chapter.name }}</span>
@@ -389,6 +443,110 @@ async function saveCacheDir() {
 </template>
 
 <style scoped>
+.book-header {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.book-cover {
+  flex: 0 0 140px;
+  width: 140px;
+  padding: 4px;
+  border: 1px solid var(--border, #2a3140);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+  line-height: 0;
+}
+
+.book-cover img {
+  width: 140px;
+  height: 180px;
+  display: block;
+  object-fit: contain;
+  background: #222;
+}
+
+.book-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.book-title {
+  margin: 0 0 10px;
+  font-size: 1.5rem;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.book-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0 0 12px;
+}
+
+.book-intro {
+  margin: 0 0 4px;
+  line-height: 1.75;
+  text-align: justify;
+}
+
+.book-divider {
+  border: none;
+  border-top: 1px solid var(--border, #2a3140);
+  margin: 14px 0;
+}
+
+.book-actions {
+  margin-top: 0;
+}
+
+.book-hint {
+  margin-top: 8px;
+}
+
+.book-toc-title {
+  margin: 28px 0 12px;
+  font-size: 1rem;
+}
+
+.chapter-item {
+  width: 100%;
+  text-align: left;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cache-panel-title {
+  margin: 16px 0 10px;
+  font-size: 1rem;
+}
+
+.cache-actions {
+  margin-top: 10px;
+}
+
+@media (max-width: 640px) {
+  .book-header {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .book-main {
+    width: 100%;
+  }
+
+  .book-title {
+    text-align: center;
+  }
+
+  .book-tags {
+    justify-content: center;
+  }
+}
+
 .download-format {
   padding: 10px 12px;
   border-radius: 10px;

@@ -1,4 +1,5 @@
 import JSZip from 'jszip'
+import { novelHtmlToPlainText } from '../utils/novel-content.js'
 import { escapeXml, sanitizeFilename } from '../utils/sanitize.js'
 
 export interface EpubChapterInput {
@@ -74,7 +75,7 @@ export async function buildEpub(options: EpubBuildOptions): Promise<Uint8Array> 
     <dc:creator>${escapeXml(author)}</dc:creator>
     <dc:language>zh-CN</dc:language>
     <dc:identifier id="BookId">${uuid}</dc:identifier>
-    ${options.intro ? `<dc:description>${escapeXml(stripHtml(options.intro))}</dc:description>` : ''}
+    ${options.intro ? `<dc:description>${escapeXml(novelHtmlToPlainText(options.intro))}</dc:description>` : ''}
     ${coverMetaTag}
   </metadata>
   <manifest>
@@ -124,13 +125,16 @@ function normalizeChapterHtml(html: string): string {
   const trimmed = html.trim()
   if (!trimmed)
     return '<p>（本章暂无内容）</p>'
-  if (trimmed.startsWith('<'))
-    return trimmed
-  return trimmed.split(/\n+/).map(p => `<p>${escapeXml(p.trim())}</p>`).join('')
-}
 
-function stripHtml(html: string): string {
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  const paragraphs = novelHtmlToPlainText(trimmed)
+    .split(/\n+/)
+    .map(p => p.trim())
+    .filter(Boolean)
+
+  if (!paragraphs.length)
+    return '<p>（本章暂无内容）</p>'
+
+  return paragraphs.map(p => `<p>${escapeXml(p)}</p>`).join('')
 }
 
 function mediaTypeForExt(ext: string): string {

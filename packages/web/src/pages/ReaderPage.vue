@@ -214,7 +214,7 @@ async function loadToc() {
     return
 
   try {
-    const toc = await api.getToc(sourceId.value, tocUrl.value)
+    const toc = await api.getToc(sourceId.value, bookUrl.value)
     chapters.value = toc.chapters
   }
   catch {

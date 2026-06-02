@@ -188,8 +188,8 @@ export const api = {
     return getJson<BookDetailResponse>(`/api/book/open?${new URLSearchParams({ sourceId, url: bookUrl })}`)
   },
 
-  getToc(sourceId: string, url: string) {
-    const params = new URLSearchParams({ sourceId, url })
+  getToc(sourceId: string, bookUrl: string) {
+    const params = new URLSearchParams({ sourceId, url: bookUrl })
     return getJson<{ chapters: ChapterItem[] }>(`/api/toc?${params}`)
   },
 
@@ -366,6 +366,18 @@ export const api = {
       if (!response.ok)
         throw new Error(await response.text())
       return response.json() as Promise<{ ok: boolean }>
+    })
+  },
+
+  reloadBookMeta(sourceId: string, bookUrl: string) {
+    return fetch('/api/cache/reload-meta', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId, bookUrl }),
+    }).then(async (response) => {
+      if (!response.ok)
+        throw new Error(await readApiError(response))
+      return response.json() as Promise<{ book: BookDetailResponse, chapters: ChapterItem[] }>
     })
   },
 }

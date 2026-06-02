@@ -2,7 +2,9 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { BookService } from '../engine/book-service.js'
-import type { BookSource, Chapter } from '../types/book-source.js'
+import type { BookDetail, BookSource, Chapter } from '../types/book-source.js'
+import type { BinaryFetcher } from '../utils/http.js'
+import { imageExtFromUrl } from '../download/cbz-builder.js'
 import type { BookCacheStatus, CacheJobProgress } from './comic-cache-service.js'
 import { hashKey, normalizeUrl, sanitizePathSegment } from './cache-keys.js'
 import { mapPool } from '../utils/async-pool.js'
@@ -24,12 +26,24 @@ export interface NovelBookCacheMeta {
   bookUrl: string
   bookName?: string
   updatedAt: string
+  bookInfoCachedAt?: string
+  tocCachedAt?: string
+  tocUrl?: string
+  coverFile?: string
+  coverSourceUrl?: string
   chapters: Record<string, CachedNovelChapterMeta>
+}
+
+export interface CachedNovelToc {
+  tocUrl?: string
+  chapters: Chapter[]
+  cachedAt: string
 }
 
 export interface NovelCacheServiceOptions {
   projectRoot: string
   bookService: BookService
+  binaryFetcher?: BinaryFetcher
 }
 
 const NOVEL_CACHE_CONCURRENCY = 5
@@ -92,6 +106,168 @@ export class NovelCacheService {
 
   getChapterDir(sourceId: string, bookUrl: string, chapterUrl: string): string {
     return join(this.getBookDir(sourceId, bookUrl), 'chapters', this.chapterKey(chapterUrl))
+  }
+
+  buildCoverApiUrl(sourceId: string, bookUrl: string): string {
+    const params = new URLSearchParams({ sourceId, bookUrl })
+    return `/api/cache/novel-cover?${params.toString()}`
+  }
+
+  async readBookDetail(sourceId: string, bookUrl: string): Promise<BookDetail | null> {
+    try {
+      const raw = await readFile(this.bookInfoPath(sourceId, bookUrl), 'utf8')
+      return JSON.parse(raw) as BookDetail
+    }
+    catch {
+      return null
+    }
+  }
+
+  async writeBookDetail(sourceId: string, bookUrl: string, detail: BookDetail): Promise<void> {
+    const bookDir = this.getBookDir(sourceId, bookUrl)
+    await mkdir(bookDir, { recursive: true })
+    await writeFile(this.bookInfoPath(sourceId, bookUrl), JSON.stringify(detail, null, 2), 'utf8')
+
+    const meta = await this.readBookMeta(sourceId, bookUrl) ?? {
+      sourceId,
+      bookUrl: normalizeUrl(bookUrl),
+      updatedAt: new Date().toISOString(),
+      chapters: {},
+    }
+    meta.bookName = detail.name
+    meta.bookInfoCachedAt = new Date().toISOString()
+    meta.tocUrl = detail.tocUrl ?? meta.tocUrl
+    meta.updatedAt = new Date().toISOString()
+    await this.writeBookMeta(sourceId, bookUrl, meta)
+  }
+
+  async readTocCache(sourceId: string, bookUrl: string): Promise<CachedNovelToc | null> {
+    try {
+      const raw = await readFile(this.tocCachePath(sourceId, bookUrl), 'utf8')
+      return JSON.parse(raw) as CachedNovelToc
+    }
+    catch {
+      return null
+    }
+  }
+
+  async writeTocCache(
+    sourceId: string,
+    bookUrl: string,
+    chapters: Chapter[],
+    tocUrl?: string,
+  ): Promise<void> {
+    const bookDir = this.getBookDir(sourceId, bookUrl)
+    await mkdir(bookDir, { recursive: true })
+    await writeFile(this.tocCachePath(sourceId, bookUrl), JSON.stringify({
+      tocUrl,
+      chapters,
+      cachedAt: new Date().toISOString(),
+    } satisfies CachedNovelToc, null, 2), 'utf8')
+
+    const meta = await this.readBookMeta(sourceId, bookUrl) ?? {
+      sourceId,
+      bookUrl: normalizeUrl(bookUrl),
+      updatedAt: new Date().toISOString(),
+      chapters: {},
+    }
+    meta.tocCachedAt = new Date().toISOString()
+    meta.tocUrl = tocUrl ?? meta.tocUrl
+    meta.updatedAt = new Date().toISOString()
+    await this.writeBookMeta(sourceId, bookUrl, meta)
+  }
+
+  async presentBookDetail(detail: BookDetail, sourceId: string, bookUrl: string): Promise<BookDetail> {
+    if (!(await this.hasCover(sourceId, bookUrl)))
+      return detail
+    return {
+      ...detail,
+      coverUrl: this.buildCoverApiUrl(sourceId, bookUrl),
+    }
+  }
+
+  async hasCover(sourceId: string, bookUrl: string): Promise<boolean> {
+    const meta = await this.readBookMeta(sourceId, bookUrl)
+    if (!meta?.coverFile)
+      return false
+    try {
+      await access(join(this.getBookDir(sourceId, bookUrl), meta.coverFile), fsConstants.F_OK)
+      return true
+    }
+    catch {
+      return false
+    }
+  }
+
+  async readCover(
+    sourceId: string,
+    bookUrl: string,
+  ): Promise<{ data: Uint8Array, contentType: string, ext: string } | null> {
+    const meta = await this.readBookMeta(sourceId, bookUrl)
+    if (!meta?.coverFile)
+      return null
+
+    try {
+      const filePath = join(this.getBookDir(sourceId, bookUrl), meta.coverFile)
+      const data = new Uint8Array(await readFile(filePath))
+      const ext = meta.coverFile.split('.').pop() ?? 'jpg'
+      return {
+        data,
+        ext,
+        contentType: coverContentType(ext),
+      }
+    }
+    catch {
+      return null
+    }
+  }
+
+  async cacheCover(sourceId: string, bookUrl: string, coverUrl?: string): Promise<void> {
+    if (!coverUrl || !this.options.binaryFetcher)
+      return
+
+    const resolvedUrl = /^https?:\/\//i.test(coverUrl)
+      ? coverUrl
+      : coverUrl
+
+    if (!/^https?:\/\//i.test(resolvedUrl))
+      return
+
+    const result = await this.options.binaryFetcher(resolvedUrl, { timeout: 60000 })
+    const ext = imageExtFromUrl(resolvedUrl, result.contentType)
+    const coverFile = `cover.${ext}`
+    const bookDir = this.getBookDir(sourceId, bookUrl)
+    await mkdir(bookDir, { recursive: true })
+    await writeFile(join(bookDir, coverFile), result.data)
+
+    const meta = await this.readBookMeta(sourceId, bookUrl) ?? {
+      sourceId,
+      bookUrl: normalizeUrl(bookUrl),
+      updatedAt: new Date().toISOString(),
+      chapters: {},
+    }
+    meta.coverFile = coverFile
+    meta.coverSourceUrl = resolvedUrl
+    meta.updatedAt = new Date().toISOString()
+    await this.writeBookMeta(sourceId, bookUrl, meta)
+  }
+
+  async refreshBookMeta(
+    source: BookSource & { id: string },
+    bookUrl: string,
+  ): Promise<{ detail: BookDetail, chapters: Chapter[] }> {
+    const detail = await this.options.bookService.getBookDetail(source, bookUrl)
+    await this.writeBookDetail(source.id, bookUrl, detail)
+
+    const tocUrl = detail.tocUrl ?? bookUrl
+    const chapters = await this.options.bookService.getToc(source, tocUrl)
+    await this.writeTocCache(source.id, bookUrl, chapters, tocUrl)
+    await this.cacheCover(source.id, bookUrl, detail.coverUrl)
+
+    return {
+      detail: await this.presentBookDetail(detail, source.id, bookUrl),
+      chapters,
+    }
   }
 
   async getStatus(
@@ -276,6 +452,14 @@ export class NovelCacheService {
     return join(this.getBookDir(sourceId, bookUrl), 'meta.json')
   }
 
+  private bookInfoPath(sourceId: string, bookUrl: string): string {
+    return join(this.getBookDir(sourceId, bookUrl), 'book.json')
+  }
+
+  private tocCachePath(sourceId: string, bookUrl: string): string {
+    return join(this.getBookDir(sourceId, bookUrl), 'toc.json')
+  }
+
   private async readBookMeta(sourceId: string, bookUrl: string): Promise<NovelBookCacheMeta | null> {
     try {
       const raw = await readFile(this.metaPath(sourceId, bookUrl), 'utf8')
@@ -307,5 +491,14 @@ export class NovelCacheService {
     }
 
     return join(this.options.projectRoot, 'cache', 'novels')
+  }
+}
+
+function coverContentType(ext: string): string {
+  switch (ext.toLowerCase()) {
+    case 'png': return 'image/png'
+    case 'webp': return 'image/webp'
+    case 'gif': return 'image/gif'
+    default: return 'image/jpeg'
   }
 }

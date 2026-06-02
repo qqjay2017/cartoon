@@ -34,7 +34,9 @@ export interface TocRule {
 export interface ContentRule {
   content?: string
   imageStyle?: string
+  nextContentUrl?: string
   replaceRegex?: string
+  title?: string
 }
 
 export interface BookSource {

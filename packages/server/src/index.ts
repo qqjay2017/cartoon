@@ -183,7 +183,7 @@ const sources = await loadSourcesFromDir(remoteDir)
 const bookService = new BookService({ fetcher })
 const comicCache = new ComicCacheService({ projectRoot: rootDir, bookService, binaryFetcher })
 await comicCache.init()
-const novelCache = new NovelCacheService({ projectRoot: rootDir, bookService })
+const novelCache = new NovelCacheService({ projectRoot: rootDir, bookService, binaryFetcher })
 await novelCache.init()
 const downloadService = new DownloadService(bookService, binaryFetcher, comicCache, novelCache)
 const downloadJobs = new DownloadJobManager(join(rootDir, 'cache', 'downloads'))
@@ -196,7 +196,11 @@ app.use('*', cors())
 
 function encodeContentDisposition(filename: string): string {
   const encoded = encodeURIComponent(filename)
-  return `attachment; filename="${filename.replace(/"/g, '')}"; filename*=UTF-8''${encoded}`
+  const asciiFallback = filename
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/"/g, '')
+    .trim() || 'download'
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`
 }
 
 function createReadableStreamFromNodeStream(stream: Readable): ReadableStream<Uint8Array> {
@@ -258,6 +262,7 @@ app.get('/api/search', async (c) => {
 app.get('/api/book', async (c) => {
   const sourceId = c.req.query('sourceId')
   const bookUrl = c.req.query('url')
+  const refresh = c.req.query('refresh') === '1'
   if (!sourceId || !bookUrl)
     return c.json({ error: 'missing sourceId or url' }, 400)
 
@@ -266,7 +271,18 @@ app.get('/api/book', async (c) => {
     return c.json({ error: 'source not found' }, 404)
 
   try {
+    if (source.bookSourceType === 0 && !refresh) {
+      const cached = await novelCache.readBookDetail(sourceId, bookUrl)
+      if (cached)
+        return c.json(await novelCache.presentBookDetail(cached, sourceId, bookUrl))
+    }
+
     const detail = await bookService.getBookDetail(source, bookUrl)
+    if (source.bookSourceType === 0) {
+      await novelCache.writeBookDetail(sourceId, bookUrl, detail)
+      await novelCache.cacheCover(sourceId, bookUrl, detail.coverUrl)
+      return c.json(await novelCache.presentBookDetail(detail, sourceId, bookUrl))
+    }
     return c.json(detail)
   }
   catch (error) {
@@ -314,8 +330,9 @@ app.put('/api/sources/:id/cookies', async (c) => {
 
 app.get('/api/toc', async (c) => {
   const sourceId = c.req.query('sourceId')
-  const tocUrl = c.req.query('url')
-  if (!sourceId || !tocUrl)
+  const bookUrl = c.req.query('url')
+  const refresh = c.req.query('refresh') === '1'
+  if (!sourceId || !bookUrl)
     return c.json({ error: 'missing sourceId or url' }, 400)
 
   const source = registry.get(sourceId)
@@ -323,7 +340,29 @@ app.get('/api/toc', async (c) => {
     return c.json({ error: 'source not found' }, 404)
 
   try {
-    const chapters = await bookService.getToc(source, tocUrl)
+    if (source.bookSourceType === 0 && !refresh) {
+      const cached = await novelCache.readTocCache(sourceId, bookUrl)
+      if (cached?.chapters.length)
+        return c.json({ chapters: cached.chapters })
+    }
+
+    let tocFetchUrl = bookUrl
+    if (source.bookSourceType === 0) {
+      const cachedBook = await novelCache.readBookDetail(sourceId, bookUrl)
+      if (cachedBook?.tocUrl)
+        tocFetchUrl = cachedBook.tocUrl
+      else {
+        const detail = await bookService.getBookDetail(source, bookUrl)
+        tocFetchUrl = detail.tocUrl ?? bookUrl
+        if (!cachedBook)
+          await novelCache.writeBookDetail(sourceId, bookUrl, detail)
+      }
+    }
+
+    const chapters = await bookService.getToc(source, tocFetchUrl)
+    if (source.bookSourceType === 0)
+      await novelCache.writeTocCache(sourceId, bookUrl, chapters, tocFetchUrl)
+
     return c.json({ chapters })
   }
   catch (error) {
@@ -606,6 +645,26 @@ app.post('/api/cache/prefetch', async (c) => {
   return c.json(result)
 })
 
+app.post('/api/cache/reload-meta', async (c) => {
+  const body = await c.req.json<{ sourceId?: string, bookUrl?: string }>()
+  if (!body.sourceId || !body.bookUrl)
+    return c.json({ error: 'missing sourceId or bookUrl' }, 400)
+
+  const source = registry.get(body.sourceId)
+  if (!source)
+    return c.json({ error: 'source not found' }, 404)
+  if (source.bookSourceType !== 0)
+    return c.json({ error: 'only novel books support reload-meta' }, 400)
+
+  try {
+    const result = await novelCache.refreshBookMeta(source, body.bookUrl)
+    return c.json({ book: result.detail, chapters: result.chapters })
+  }
+  catch (error) {
+    return c.json({ error: formatSourceFetchError(error, source.bookSourceName) }, 502)
+  }
+})
+
 app.delete('/api/cache', async (c) => {
   const sourceId = c.req.query('sourceId')
   const bookUrl = c.req.query('bookUrl')
@@ -615,6 +674,24 @@ app.delete('/api/cache', async (c) => {
   await comicCache.clearBook(sourceId, bookUrl)
   await novelCache.clearBook(sourceId, bookUrl)
   return c.json({ ok: true })
+})
+
+app.get('/api/cache/novel-cover', async (c) => {
+  const sourceId = c.req.query('sourceId')
+  const bookUrl = c.req.query('bookUrl')
+  if (!sourceId || !bookUrl)
+    return c.json({ error: 'missing params' }, 400)
+
+  const cover = await novelCache.readCover(sourceId, bookUrl)
+  if (!cover)
+    return c.json({ error: 'cover not found' }, 404)
+
+  return new Response(Buffer.from(cover.data), {
+    headers: {
+      'Content-Type': cover.contentType,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  })
 })
 
 app.get('/api/cache/image', async (c) => {

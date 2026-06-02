@@ -1,3 +1,4 @@
+import { novelHtmlToPlainText } from '../utils/novel-content.js'
 import { sanitizeFilename } from '../utils/sanitize.js'
 
 export interface TxtChapterInput {
@@ -19,7 +20,7 @@ export function buildTxt(options: TxtBuildOptions): Uint8Array {
   if (options.author)
     lines.push(`作者：${options.author}`)
   if (options.intro)
-    lines.push('', stripHtml(options.intro))
+    lines.push('', novelHtmlToPlainText(options.intro))
   lines.push('', '='.repeat(40), '')
 
   for (const chapter of options.chapters) {
@@ -42,26 +43,8 @@ function htmlToPlainText(html: string): string {
   if (!trimmed)
     return '（本章暂无内容）'
 
-  return stripHtml(trimmed)
+  return novelHtmlToPlainText(trimmed)
     .replace(/\r\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, '\'')
-    .replace(/\s+\n/g, '\n')
-    .replace(/\n\s+/g, '\n')
-    .replace(/[ \t]{2,}/g, ' ')
     .trim()
 }

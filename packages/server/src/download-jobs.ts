@@ -78,7 +78,9 @@ export class DownloadJobManager {
           phase: 'pack',
           current: result.exportedFiles?.length ?? 1,
           total: result.exportedFiles?.length ?? 1,
-          message: `已导出 ${result.exportedFiles?.length ?? 0} 个 CBZ`,
+          message: result.exportDir
+            ? `已保存到 ${result.exportDir}`
+            : `已导出 ${result.exportedFiles?.length ?? 0} 个文件`,
         }
         return
       }

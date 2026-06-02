@@ -17,7 +17,11 @@ import {
   type LegadoSearchRequest,
 } from '../utils/legado-search.js'
 import { type Fetcher } from '../utils/http.js'
-import { applyLegadoReplaceRegex, sanitizeNovelHtml } from '../utils/novel-content.js'
+import {
+  applyLegadoReplaceRegex,
+  isSameChapterNextPage,
+  sanitizeNovelHtml,
+} from '../utils/novel-content.js'
 
 export interface BookServiceOptions {
   fetcher: Fetcher
@@ -271,12 +275,18 @@ export class BookService {
       ? tocUrl
       : new URL(tocUrl, source.bookSourceUrl).href
 
+    let bookPageHtml = ''
+    const tocUrlBeforeResolve = resolvedTocUrl
+
     if (source.ruleBookInfo?.tocUrl) {
       const engine = this.createEngine(source)
+      if (!isResolvedTocApiUrl(resolvedTocUrl))
+        bookPageHtml = await this.fetchSourceText(source, resolvedTocUrl)
+
       const normalized = engine.evaluate(source.ruleBookInfo.tocUrl, {
         baseUrl: resolvedTocUrl,
-        content: '',
-        src: '',
+        content: bookPageHtml,
+        src: bookPageHtml,
       })
       if (normalized) {
         resolvedTocUrl = /^https?:\/\//i.test(normalized)
@@ -290,7 +300,9 @@ export class BookService {
     if (midFromTocUrl)
       session.javaPut('mid', midFromTocUrl)
 
-    const content = await this.fetchSourceText(source, resolvedTocUrl)
+    const content = bookPageHtml && resolvedTocUrl === tocUrlBeforeResolve
+      ? bookPageHtml
+      : await this.fetchSourceText(source, resolvedTocUrl)
 
     const engine = this.createEngine(source)
     const ctx = { baseUrl: resolvedTocUrl, content, src: content }
@@ -368,16 +380,50 @@ export class BookService {
       ? chapterUrl
       : new URL(chapterUrl, source.bookSourceUrl).href
 
-    const content = await this.fetchSourceText(source, resolvedUrl)
+    let content = await this.fetchSourceText(source, resolvedUrl)
 
     const engine = this.createEngine(source)
     const rule = source.ruleContent?.content
-    const html = engine.evaluate(rule, {
+    const ruleCtx = {
       baseUrl: resolvedUrl,
       content,
       src: content,
       result: content,
-    })
+    }
+    let html = engine.evaluate(rule, ruleCtx)
+
+    const nextContentRule = source.ruleContent?.nextContentUrl
+    if (nextContentRule && source.bookSourceType === 0) {
+      let currentUrl = resolvedUrl
+      const maxPages = 50
+      for (let page = 0; page < maxPages; page++) {
+        const nextUrlRaw = engine.evaluate(nextContentRule, {
+          baseUrl: currentUrl,
+          content,
+          src: content,
+          result: content,
+        })
+        if (!nextUrlRaw)
+          break
+
+        const nextUrl = /^https?:\/\//i.test(nextUrlRaw)
+          ? nextUrlRaw
+          : new URL(nextUrlRaw, currentUrl).href
+        if (!isSameChapterNextPage(currentUrl, nextUrl))
+          break
+
+        currentUrl = nextUrl
+        content = await this.fetchSourceText(source, currentUrl)
+        const pageHtml = engine.evaluate(rule, {
+          baseUrl: currentUrl,
+          content,
+          src: content,
+          result: content,
+        })
+        if (pageHtml)
+          html = `${html}${pageHtml}`
+      }
+    }
 
     if (source.bookSourceType === 2) {
       const normalizedHtml = html.replace(/<\s+img/gi, '<img')
@@ -431,4 +477,19 @@ interface BookState {
   kind?: string
   bookUrl?: string
   origin?: string
+}
+
+/** 已是目录 API 地址（如 mgsearcher），无需再抓详情页解析 tocUrl */
+function isResolvedTocApiUrl(url: string): boolean {
+  try {
+    const { pathname, search } = new URL(url)
+    if (pathname.includes('/api/'))
+      return true
+    if (/[?&]mid=\d+/i.test(search))
+      return true
+    return false
+  }
+  catch {
+    return false
+  }
 }
