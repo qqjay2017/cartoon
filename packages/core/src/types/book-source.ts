@@ -34,6 +34,7 @@ export interface TocRule {
 export interface ContentRule {
   content?: string
   imageStyle?: string
+  replaceRegex?: string
 }
 
 export interface BookSource {
@@ -42,6 +43,7 @@ export interface BookSource {
   bookSourceType: BookSourceType
   bookSourceGroup?: string
   enabled?: boolean
+  enabledCookieJar?: boolean
   header?: string
   searchUrl?: string
   ruleSearch?: SearchRule

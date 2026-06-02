@@ -1,6 +1,12 @@
 export interface FetchOptions {
   headers?: Record<string, string>
   timeout?: number
+  method?: 'GET' | 'POST'
+  body?: string | Uint8Array
+  /** 响应体字符集，如 gbk */
+  responseCharset?: string
+  /** 从服务端 Cookie 存储读取并附加到请求 */
+  cookieJarKey?: string
 }
 
 export type Fetcher = (url: string, options?: FetchOptions) => Promise<string>

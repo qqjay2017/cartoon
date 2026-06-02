@@ -8,6 +8,7 @@ export interface BookState {
   intro?: string
   bookUrl?: string
   tocUrl?: string
+  origin?: string
 }
 
 export interface RuleEvalContext {
@@ -42,6 +43,7 @@ export class SourceSession {
 
   createSourceProxy() {
     return {
+      bookSourceUrl: this.source.bookSourceUrl,
       getVariable: () => this.getVariable(),
       setVariable: (value: string) => this.setVariable(value),
     }

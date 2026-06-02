@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import type { ComicCacheService } from '../cache/comic-cache-service.js'
+import type { NovelCacheService } from '../cache/novel-cache-service.js'
 import { buildCbzFromCache } from './cbz-from-cache.js'
 import { CBZ_CHAPTERS_PER_FILE, cbzPartFilename, imageExtFromUrl } from './cbz-builder.js'
 import { buildComicFolder, folderFilename } from './folder-builder.js'
@@ -45,6 +46,7 @@ export interface DownloadResult {
 
 const COMIC_CHAPTER_CONCURRENCY = 3
 const COMIC_IMAGE_CONCURRENCY = 4
+const NOVEL_CHAPTER_CONCURRENCY = 5
 const DOWNLOAD_FETCH_TIMEOUT = 300000
 
 export class DownloadService {
@@ -52,6 +54,7 @@ export class DownloadService {
     private bookService: BookService,
     private binaryFetcher: BinaryFetcher,
     private comicCache?: ComicCacheService,
+    private novelCache?: NovelCacheService,
   ) {}
 
   async download(options: DownloadOptions): Promise<DownloadResult> {
@@ -71,21 +74,13 @@ export class DownloadService {
       if (source.bookSourceType !== 0)
         throw new Error('该书源不是小说类型，请使用 CBZ 或文件夹下载')
 
-      const novelChapters = []
-      for (let i = 0; i < chapters.length; i++) {
-        const chapter = chapters[i]!
-        options.onProgress?.({
-          phase: 'chapters',
-          current: i + 1,
-          total: chapters.length,
-          message: chapter.name,
-        })
-        const content = await this.bookService.getChapterContent(source, chapter.url)
-        novelChapters.push({
-          title: chapter.name,
-          html: content.text ?? '',
-        })
-      }
+      const novelChapters = await this.fetchNovelChapters(
+        source,
+        bookUrl,
+        chapters,
+        detail.name,
+        options.onProgress,
+      )
 
       if (format === 'txt') {
         options.onProgress?.({ phase: 'pack', current: 1, total: 1, message: '打包 TXT' })
@@ -318,6 +313,69 @@ export class DownloadService {
       throw new Error('未获取到漫画图片')
 
     return comicChapters
+  }
+
+  private async fetchNovelChapters(
+    source: BookSource & { id: string },
+    bookUrl: string,
+    chapters: Chapter[],
+    bookName: string,
+    onProgress?: DownloadOptions['onProgress'],
+  ) {
+    const results: Array<{ title: string, html: string } | null> = new Array(chapters.length).fill(null)
+    let completed = 0
+    let cachedCount = 0
+
+    const report = (chapter: Chapter, fromCache: boolean) => {
+      completed++
+      if (fromCache)
+        cachedCount++
+      onProgress?.({
+        phase: 'chapters',
+        current: completed,
+        total: chapters.length,
+        message: fromCache ? `${chapter.name}（本地缓存）` : chapter.name,
+        fromCache,
+        cachedChapters: cachedCount,
+      })
+    }
+
+    await mapPool(
+      chapters.map((chapter, index) => ({ chapter, index })),
+      NOVEL_CHAPTER_CONCURRENCY,
+      async ({ chapter, index }) => {
+        await withRetry(async () => {
+          if (this.novelCache && await this.novelCache.hasChapter(source.id, bookUrl, chapter.url)) {
+            const cached = await this.novelCache.readChapterText(source.id, bookUrl, chapter.url)
+            if (cached?.text) {
+              results[index] = { title: chapter.name, html: cached.text }
+              report(chapter, true)
+              return
+            }
+          }
+
+          const content = await withRetry(
+            () => this.bookService.getChapterContent(source, chapter.url),
+            { retries: 3, delayMs: 2000 },
+          )
+          const text = content.text ?? ''
+          if (!text.trim())
+            throw new Error(`章节无正文：${chapter.name}`)
+
+          if (this.novelCache)
+            await this.novelCache.writeChapterText(source.id, bookUrl, chapter, text, bookName)
+
+          results[index] = { title: chapter.name, html: text }
+          report(chapter, false)
+        }, { retries: 2, delayMs: 2500 })
+      },
+    )
+
+    const novelChapters = results.filter((item): item is NonNullable<typeof item> => Boolean(item))
+    if (!novelChapters.length)
+      throw new Error('未获取到小说章节内容')
+
+    return novelChapters
   }
 
   private async fetchImage(url: string): Promise<{ data: Uint8Array, ext: string }> {

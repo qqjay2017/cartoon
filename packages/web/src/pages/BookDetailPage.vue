@@ -127,7 +127,7 @@ async function refreshCacheStatus() {
 async function loadCacheConfig() {
   try {
     const config = await api.getCacheConfig()
-    cacheDirInput.value = config.comicDir
+    cacheDirInput.value = isComic.value ? config.comicDir : (config.novelDir ?? config.comicDir)
   }
   catch {
     // ignore
@@ -281,8 +281,10 @@ function cancelClearCache() {
 async function saveCacheDir() {
   cacheError.value = ''
   try {
-    const result = await api.setCacheConfig(cacheDirInput.value.trim())
-    cacheDirInput.value = result.comicDir
+    const result = await api.setCacheConfig(cacheDirInput.value.trim(), isComic.value ? 'comic' : 'novel')
+    cacheDirInput.value = isComic.value
+      ? (result.comicDir ?? cacheDirInput.value)
+      : (result.novelDir ?? cacheDirInput.value)
     cacheMessage.value = '缓存目录已更新'
   }
   catch (e) {
@@ -330,11 +332,11 @@ async function saveCacheDir() {
         <p v-else-if="isComic && downloadFormat === 'cbz'" class="meta" style="margin-top: 8px;">
           漫画 CBZ 按每 100 章分卷，导出后保存在本地缓存目录，不会触发浏览器下载。
         </p>
-        <p v-else-if="isComic && !downloading && cacheStatus?.cachedChapters" class="meta" style="margin-top: 8px;">
-          导出时将优先读取本地缓存（已缓存 {{ cacheStatus.cachedChapters }}/{{ chapters.length }} 章），缺失章节会自动补全并写入缓存。
+        <p v-else-if="!downloading && cacheStatus?.cachedChapters" class="meta" style="margin-top: 8px;">
+          导出时将优先读取本地缓存（已缓存 {{ cacheStatus.cachedChapters }}/{{ chapters.length }} 章），缺失章节会并发下载并写入缓存。
         </p>
 
-        <div v-if="isComic" class="cache-panel">
+        <div class="cache-panel">
           <h3 style="margin: 20px 0 10px; font-size: 1rem;">本地缓存</h3>
           <p v-if="cacheProgressText" class="meta">{{ cacheProgressText }}</p>
           <div class="actions" style="margin-top: 10px;">
@@ -354,7 +356,12 @@ async function saveCacheDir() {
           </div>
           <div class="cache-dir-row">
             <label class="meta">缓存目录</label>
-            <input v-model="cacheDirInput" class="cache-dir-input" type="text" placeholder="项目内 cache/comics 或绝对路径">
+            <input
+              v-model="cacheDirInput"
+              class="cache-dir-input"
+              type="text"
+              :placeholder="isComic ? 'cache/comics 或绝对路径' : 'cache/novels 或绝对路径'"
+            >
             <button @click="saveCacheDir">保存目录</button>
           </div>
           <p v-if="cacheMessage" class="meta" style="margin-top: 8px;">{{ cacheMessage }}</p>

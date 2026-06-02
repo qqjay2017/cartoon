@@ -7,6 +7,11 @@ export * from './engine/book-service.js'
 export * from './loader/source-loader.js'
 export * from './registry/source-registry.js'
 export * from './cache/comic-cache-service.js'
+export {
+  NovelCacheService,
+  type CachedNovelChapterMeta,
+  type NovelBookCacheMeta,
+} from './cache/novel-cache-service.js'
 export * from './cache/cache-keys.js'
 export * from './download/download-service.js'
 export * from './download/epub-builder.js'
@@ -17,3 +22,4 @@ export * from './download/folder-builder.js'
 export * from './utils/retry.js'
 export * from './utils/async-pool.js'
 export * from './utils/http.js'
+export * from './utils/legado-search.js'

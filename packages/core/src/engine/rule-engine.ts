@@ -216,7 +216,7 @@ export class RuleEngine {
     const head = hashIndex === -1 ? part : part.slice(0, hashIndex)
     const regexParts = hashIndex === -1 ? [] : part.slice(hashIndex + 2).split('##')
 
-    if (known.includes(head) || head.startsWith('data-'))
+    if (known.includes(head) || head.startsWith('data-') || head === 'content')
       return { kind: head, regexParts }
 
     return null
@@ -246,6 +246,9 @@ export class RuleEngine {
       case 'src':
         value = this.resolveUrl($el.first().attr('src') ?? '', ctx.baseUrl)
         break
+      case 'content':
+        value = $el.first().attr('content') ?? ''
+        break
       default:
         value = $el.first().attr(kind) ?? $el.first().text().trim()
         if (['src', 'href', 'data-original'].includes(kind) || kind.startsWith('data-'))
@@ -268,8 +271,13 @@ export class RuleEngine {
     if (!trimmed)
       return ''
 
-    if (trimmed.startsWith('.') || trimmed.startsWith('#') || trimmed.startsWith('['))
-      return trimmed.split('##')[0]!
+    const head = trimmed.split('##')[0]!
+
+    if (head.startsWith('.') || head.startsWith('#') || head.startsWith('['))
+      return head
+
+    if (head.includes('[') || head.includes('>') || head.includes(':') || head.includes(' '))
+      return head
 
     if (trimmed.startsWith('tag.'))
       return trimmed.slice(4).trim().split('##')[0]!
@@ -282,7 +290,6 @@ export class RuleEngine {
       return classes.map(name => `.${name.split('##')[0]!}`).join('')
     }
 
-    const head = trimmed.split('##')[0]!
     if (/^[a-zA-Z][\w-]*$/.test(head))
       return head
 

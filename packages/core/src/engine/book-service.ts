@@ -1,6 +1,6 @@
 import * as cheerio from 'cheerio'
 import { isJsonContent } from './json-rules.js'
-import { JsRuntime } from './js-runtime.js'
+import { isJsRule, JsRuntime } from './js-runtime.js'
 import { RuleEngine } from './rule-engine.js'
 import { SourceSession } from './source-session.js'
 import type {
@@ -10,7 +10,14 @@ import type {
   ChapterContent,
   SearchBook,
 } from '../types/book-source.js'
+import {
+  isDirectBookUrl,
+  parseLegadoSearchSpec,
+  shouldSkipJsRuleParsing,
+  type LegadoSearchRequest,
+} from '../utils/legado-search.js'
 import { type Fetcher } from '../utils/http.js'
+import { applyLegadoReplaceRegex, sanitizeNovelHtml } from '../utils/novel-content.js'
 
 export interface BookServiceOptions {
   fetcher: Fetcher
@@ -39,6 +46,34 @@ export class BookService {
     })
   }
 
+  private bookContext(book: BookState, source: BookSource & { id: string }) {
+    return {
+      ...book,
+      origin: source.bookSourceUrl,
+    }
+  }
+
+  private inferResponseCharset(source: BookSource & { id: string }): string | undefined {
+    if (source.searchUrl?.toLowerCase().includes('gbk'))
+      return 'gbk'
+    return undefined
+  }
+
+  private async fetchSourceText(
+    source: BookSource & { id: string },
+    url: string,
+    extraHeaders?: Record<string, string>,
+  ): Promise<string> {
+    return this.options.fetcher(url, {
+      headers: {
+        ...await this.resolveHeaders(source, url),
+        ...extraHeaders,
+      },
+      responseCharset: this.inferResponseCharset(source),
+      cookieJarKey: source.enabledCookieJar ? source.id : undefined,
+    })
+  }
+
   private async resolveHeaders(source: BookSource & { id: string }, baseUrl: string): Promise<Record<string, string>> {
     const raw = source.header?.trim()
     if (!raw)
@@ -55,30 +90,118 @@ export class BookService {
     }
   }
 
-  private resolveSearchUrl(source: BookSource & { id: string }, keyword: string, page = 1): string {
+  private resolveSearchRequest(
+    source: BookSource & { id: string },
+    keyword: string,
+    page = 1,
+  ): LegadoSearchRequest {
     if (!source.searchUrl)
-      return ''
+      return { url: '' }
 
-    return this.jsRuntime.resolveTemplate(
-      source.searchUrl,
-      { key: keyword, page, baseUrl: source.bookSourceUrl },
-      this.getSession(source),
-    )
+    const session = this.getSession(source)
+    let spec = source.searchUrl
+
+    if (isJsRule(spec)) {
+      const script = spec.trim().startsWith('@js:')
+        ? spec.trim().slice(4).trim()
+        : spec.match(/^<js>([\s\S]*)<\/js>/i)?.[1]?.trim() ?? ''
+      spec = String(this.jsRuntime.evaluateExpression(script, {
+        key: keyword,
+        page,
+        baseUrl: source.bookSourceUrl,
+        source: session.createSourceProxy(),
+        java: session.createJavaApi(''),
+      }) ?? '')
+    }
+    else {
+      spec = this.jsRuntime.resolveTemplate(
+        spec,
+        { key: keyword, page, baseUrl: source.bookSourceUrl },
+        session,
+      )
+    }
+
+    if (!spec || /^https?:\/\//i.test(spec))
+      return { url: spec }
+
+    if (shouldSkipJsRuleParsing(spec) || !spec.includes(','))
+      return { url: spec }
+
+    return parseLegadoSearchSpec(spec, source.bookSourceUrl, { key: keyword, page })
+  }
+
+  private async fetchForSearch(
+    source: BookSource & { id: string },
+    request: LegadoSearchRequest,
+  ): Promise<string> {
+    const headers = {
+      ...await this.resolveHeaders(source, request.url),
+      ...request.headers,
+    }
+
+    return this.options.fetcher(request.url, {
+      headers,
+      method: request.method,
+      body: request.body,
+      responseCharset: request.responseCharset,
+      cookieJarKey: source.enabledCookieJar ? source.id : undefined,
+    })
   }
 
   async search(source: BookSource & { id: string }, keyword: string): Promise<SearchBook[]> {
+    const trimmed = keyword.trim()
+    if (!trimmed)
+      return []
+
+    if (isDirectBookUrl(trimmed))
+      return this.searchByDirectUrl(source, trimmed)
+
     if (!source.searchUrl || !source.ruleSearch?.bookList)
       return []
 
-    const searchUrl = this.resolveSearchUrl(source, keyword)
-    const html = await this.options.fetcher(searchUrl, {
-      headers: await this.resolveHeaders(source, searchUrl),
-    })
+    const request = this.resolveSearchRequest(source, trimmed)
+    if (!request.url)
+      return []
 
+    const html = await this.fetchForSearch(source, request)
+    return this.parseSearchResults(source, html, request.url)
+  }
+
+  async openByUrl(source: BookSource & { id: string }, bookUrl: string): Promise<BookDetail> {
+    return this.getBookDetail(source, bookUrl.trim())
+  }
+
+  private async searchByDirectUrl(source: BookSource & { id: string }, bookUrl: string): Promise<SearchBook[]> {
+    try {
+      const detail = await this.getBookDetail(source, bookUrl)
+      return [{
+        sourceId: detail.sourceId,
+        sourceName: detail.sourceName,
+        sourceType: detail.sourceType,
+        name: detail.name,
+        author: detail.author,
+        intro: detail.intro,
+        kind: detail.kind,
+        lastChapter: detail.lastChapter,
+        wordCount: detail.wordCount,
+        coverUrl: detail.coverUrl,
+        bookUrl: detail.bookUrl,
+      }]
+    }
+    catch {
+      return []
+    }
+  }
+
+  private parseSearchResults(
+    source: BookSource & { id: string },
+    html: string,
+    searchUrl: string,
+  ): SearchBook[] {
     const engine = this.createEngine(source)
     const ctx = { baseUrl: searchUrl }
     const $ = cheerio.load(html)
-    const list = engine.parseList(html, source.ruleSearch.bookList, ctx)
+    const list = engine.parseList(html, source.ruleSearch!.bookList, ctx)
     const results: SearchBook[] = []
 
     list.each((_, node) => {
@@ -113,18 +236,16 @@ export class BookService {
   }
 
   async getBookDetail(source: BookSource & { id: string }, bookUrl: string): Promise<BookDetail> {
-    const html = await this.options.fetcher(bookUrl, {
-      headers: await this.resolveHeaders(source, bookUrl),
-    })
+    const html = await this.fetchSourceText(source, bookUrl)
 
     const engine = this.createEngine(source)
     const baseCtx = { baseUrl: bookUrl, content: html, src: html }
     const rules = source.ruleBookInfo ?? {}
 
     const name = engine.evaluate(rules.name, baseCtx) || '未知'
-    const author = engine.evaluate(rules.author, { ...baseCtx, book: { name } }) || undefined
-    const kind = engine.evaluate(rules.kind, { ...baseCtx, book: { name, author } }) || undefined
-    const book = { name, author, kind, bookUrl }
+    const author = engine.evaluate(rules.author, { ...baseCtx, book: { name, origin: source.bookSourceUrl } }) || undefined
+    const kind = engine.evaluate(rules.kind, { ...baseCtx, book: { name, author, origin: source.bookSourceUrl } }) || undefined
+    const book = this.bookContext({ name, author, kind, bookUrl }, source)
 
     return {
       sourceId: source.id,
@@ -146,25 +267,38 @@ export class BookService {
     if (!source.ruleToc?.chapterList)
       return []
 
-    const resolvedTocUrl = /^https?:\/\//i.test(tocUrl)
+    let resolvedTocUrl = /^https?:\/\//i.test(tocUrl)
       ? tocUrl
       : new URL(tocUrl, source.bookSourceUrl).href
+
+    if (source.ruleBookInfo?.tocUrl) {
+      const engine = this.createEngine(source)
+      const normalized = engine.evaluate(source.ruleBookInfo.tocUrl, {
+        baseUrl: resolvedTocUrl,
+        content: '',
+        src: '',
+      })
+      if (normalized) {
+        resolvedTocUrl = /^https?:\/\//i.test(normalized)
+          ? normalized
+          : new URL(normalized, source.bookSourceUrl).href
+      }
+    }
 
     const session = this.getSession(source)
     const midFromTocUrl = resolvedTocUrl.match(/[?&]mid=(\d+)/)?.[1]
     if (midFromTocUrl)
       session.javaPut('mid', midFromTocUrl)
 
-    const content = await this.options.fetcher(resolvedTocUrl, {
-      headers: await this.resolveHeaders(source, resolvedTocUrl),
-    })
+    const content = await this.fetchSourceText(source, resolvedTocUrl)
 
     const engine = this.createEngine(source)
     const ctx = { baseUrl: resolvedTocUrl, content, src: content }
+    const reverseOrder = source.ruleToc.chapterList.includes('[-1:0]')
 
     if (isJsonContent(content)) {
       const items = engine.parseJsonList(content, source.ruleToc.chapterList)
-      return items.map((item) => {
+      const chapters = items.map((item) => {
         const name = engine.parseJsonItem(item, source.ruleToc?.chapterName, ctx)
         let url = engine.parseJsonItem(item, source.ruleToc?.chapterUrl, { ...ctx, jsonItem: item })
         if (url && !/^https?:\/\//i.test(url))
@@ -178,11 +312,14 @@ export class BookService {
             : undefined,
         }
       }).filter(chapter => chapter.name && chapter.url)
+
+      return reverseOrder ? chapters.reverse() : chapters
     }
 
     const $ = cheerio.load(content)
-    const list = engine.parseList(content, source.ruleToc.chapterList, { baseUrl: resolvedTocUrl })
-    const chapters: Chapter[] = []
+    const listRule = source.ruleToc.chapterList.replace('[-1:0]', '')
+    const list = engine.parseList(content, listRule, { baseUrl: resolvedTocUrl })
+    const drafts: Array<{ chapter: Chapter, dataNum?: number }> = []
 
     list.each((_, node) => {
       const $item = $(node)
@@ -200,17 +337,27 @@ export class BookService {
       }
 
       if (name && url) {
-        chapters.push({
-          name,
-          url,
-          updateTime: source.ruleToc?.updateTime
-            ? engine.parseElement($item, source.ruleToc.updateTime, { baseUrl: resolvedTocUrl })
-            : undefined,
+        const dataNumRaw = $item.closest('li').attr('data-num')
+        const dataNum = dataNumRaw ? Number(dataNumRaw) : undefined
+        drafts.push({
+          chapter: {
+            name,
+            url,
+            updateTime: source.ruleToc?.updateTime
+              ? engine.parseElement($item, source.ruleToc.updateTime, { baseUrl: resolvedTocUrl })
+              : undefined,
+          },
+          dataNum: Number.isFinite(dataNum) ? dataNum : undefined,
         })
       }
     })
 
-    return chapters
+    if (drafts.length > 1 && drafts.every(item => item.dataNum !== undefined))
+      drafts.sort((a, b) => a.dataNum! - b.dataNum!)
+    else if (reverseOrder)
+      drafts.reverse()
+
+    return drafts.map(item => item.chapter)
   }
 
   async getChapterContent(
@@ -221,9 +368,7 @@ export class BookService {
       ? chapterUrl
       : new URL(chapterUrl, source.bookSourceUrl).href
 
-    const content = await this.options.fetcher(resolvedUrl, {
-      headers: await this.resolveHeaders(source, resolvedUrl),
-    })
+    const content = await this.fetchSourceText(source, resolvedUrl)
 
     const engine = this.createEngine(source)
     const rule = source.ruleContent?.content
@@ -270,6 +415,20 @@ export class BookService {
         return { images }
     }
 
-    return { text: html || content }
+    let text = html || content
+    if (source.bookSourceType === 0 && text) {
+      text = sanitizeNovelHtml(text)
+      text = applyLegadoReplaceRegex(text, source.ruleContent?.replaceRegex)
+    }
+
+    return { text }
   }
+}
+
+interface BookState {
+  name?: string
+  author?: string
+  kind?: string
+  bookUrl?: string
+  origin?: string
 }

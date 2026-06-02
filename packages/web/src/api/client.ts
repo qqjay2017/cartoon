@@ -6,6 +6,13 @@ export interface SourceSummary {
   type: BookSourceType
   group?: string
   url: string
+  cookieJar?: boolean
+}
+
+export interface SourceCookiesResponse {
+  sourceId: string
+  cookies: string
+  configured: boolean
 }
 
 export interface BookDetailResponse extends SearchBook {
@@ -18,10 +25,23 @@ export interface ChapterItem {
   updateTime?: string
 }
 
+async function readApiError(response: Response): Promise<string> {
+  const text = await response.text()
+  try {
+    const json = JSON.parse(text) as { error?: string }
+    if (json.error)
+      return json.error
+  }
+  catch {
+    // not json
+  }
+  return text || `HTTP ${response.status}`
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url)
   if (!response.ok)
-    throw new Error(await response.text())
+    throw new Error(await readApiError(response))
   return response.json() as Promise<T>
 }
 
@@ -137,6 +157,21 @@ export const api = {
     return getJson<SourceSummary[]>(`/api/sources${query}`)
   },
 
+  getSourceCookies(sourceId: string) {
+    return getJson<SourceCookiesResponse>(`/api/sources/${encodeURIComponent(sourceId)}/cookies`)
+  },
+
+  async setSourceCookies(sourceId: string, cookies: string) {
+    const response = await fetch(`/api/sources/${encodeURIComponent(sourceId)}/cookies`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cookies }),
+    })
+    if (!response.ok)
+      throw new Error(await readApiError(response))
+    return response.json() as Promise<SourceCookiesResponse>
+  },
+
   search(keyword: string, type?: BookSourceType) {
     const params = new URLSearchParams({ q: keyword })
     if (type !== undefined)
@@ -147,6 +182,10 @@ export const api = {
   getBook(sourceId: string, url: string) {
     const params = new URLSearchParams({ sourceId, url })
     return getJson<BookDetailResponse>(`/api/book?${params}`)
+  },
+
+  openBookByUrl(sourceId: string, bookUrl: string) {
+    return getJson<BookDetailResponse>(`/api/book/open?${new URLSearchParams({ sourceId, url: bookUrl })}`)
   },
 
   getToc(sourceId: string, url: string) {
@@ -275,18 +314,18 @@ export const api = {
   },
 
   getCacheConfig() {
-    return getJson<{ comicDir: string }>('/api/cache/config')
+    return getJson<{ comicDir: string, novelDir?: string }>('/api/cache/config')
   },
 
-  setCacheConfig(comicDir: string) {
+  setCacheConfig(dir: string, type: 'comic' | 'novel' = 'comic') {
     return fetch('/api/cache/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ comicDir }),
+      body: JSON.stringify(type === 'novel' ? { novelDir: dir } : { comicDir: dir }),
     }).then(async (response) => {
       if (!response.ok)
         throw new Error(await response.text())
-      return response.json() as Promise<{ comicDir: string }>
+      return response.json() as Promise<{ comicDir?: string, novelDir?: string }>
     })
   },
 
