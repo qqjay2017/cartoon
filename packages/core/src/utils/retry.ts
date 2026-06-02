@@ -1,18 +1,35 @@
-export function isRetryableNetworkError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase()
-    const name = error.name.toLowerCase()
-    return name === 'aborterror'
-      || msg.includes('aborted')
-      || msg.includes('timeout')
-      || msg.includes('timed out')
-      || msg.includes('econnreset')
-      || msg.includes('etimedout')
-      || msg.includes('socket')
-      || msg.includes('network')
-      || msg.includes('fetch failed')
+function collectErrorSignals(error: unknown): string {
+  const parts: string[] = []
+  let current: unknown = error
+  let depth = 0
+
+  while (current instanceof Error && depth < 6) {
+    parts.push(current.name, current.message)
+    const code = (current as NodeJS.ErrnoException).code
+    if (code)
+      parts.push(code)
+    current = current.cause
+    depth++
   }
-  return false
+
+  return parts.join(' ').toLowerCase()
+}
+
+export function isRetryableNetworkError(error: unknown): boolean {
+  const text = collectErrorSignals(error)
+  return text.includes('aborterror')
+    || text.includes('aborted')
+    || text.includes('timeout')
+    || text.includes('timed out')
+    || text.includes('econnreset')
+    || text.includes('econnrefused')
+    || text.includes('etimedout')
+    || text.includes('enotfound')
+    || text.includes('socket')
+    || text.includes('tls')
+    || text.includes('network')
+    || text.includes('fetch failed')
+    || text.includes('disconnected before secure tls')
 }
 
 export async function withRetry<T>(

@@ -177,6 +177,18 @@ export class ComicCacheService {
     }
   }
 
+  async listChapterFiles(
+    sourceId: string,
+    bookUrl: string,
+    chapterUrl: string,
+  ): Promise<string[] | null> {
+    if (!(await this.hasChapter(sourceId, bookUrl, chapterUrl)))
+      return null
+
+    const meta = await this.readBookMeta(sourceId, bookUrl)
+    return meta?.chapters[this.chapterKey(chapterUrl)]?.files ?? null
+  }
+
   async readCachedChapterPages(
     sourceId: string,
     bookUrl: string,
@@ -263,6 +275,20 @@ export class ComicCacheService {
     await this.writeBookMeta(sourceId, bookUrl, meta)
   }
 
+  /** 将打包好的 CBZ 写入该书缓存目录（与 chapters/、meta.json 同级） */
+  async saveCbzExport(
+    sourceId: string,
+    bookUrl: string,
+    data: Uint8Array,
+    filename: string,
+  ): Promise<string> {
+    const bookDir = this.getBookDir(sourceId, bookUrl)
+    await mkdir(bookDir, { recursive: true })
+    const filePath = join(bookDir, filename)
+    await writeFile(filePath, data)
+    return filePath
+  }
+
   async cacheChapter(
     source: BookSource & { id: string },
     bookUrl: string,
@@ -277,7 +303,7 @@ export class ComicCacheService {
     if (!imageUrls.length)
       return false
 
-    const pages = await mapPool(imageUrls, 6, async (imageUrl) => {
+    const pages = await mapPool(imageUrls, 3, async (imageUrl) => {
       const fetched = await this.options.binaryFetcher(imageUrl)
       return {
         data: fetched.data,

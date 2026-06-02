@@ -119,6 +119,9 @@ export interface DownloadJobSnapshot {
   progress?: DownloadProgress
   error?: string
   filename?: string
+  localExport?: boolean
+  exportDir?: string
+  exportedFiles?: string[]
 }
 
 function downloadProgressKey(job: DownloadJobSnapshot): string {
@@ -234,6 +237,14 @@ export const api = {
         onProgress(job)
 
         if (job.status === 'done') {
+          if (job.localExport) {
+            return {
+              localExport: true,
+              exportDir: job.exportDir ?? '',
+              exportedFiles: job.exportedFiles ?? [],
+            }
+          }
+
           const filename = job.filename ?? `download.${format}`
           this.triggerDownloadJobFile(jobId, filename)
           return { filename }

@@ -1,5 +1,7 @@
+import { join } from 'node:path'
 import type { ComicCacheService } from '../cache/comic-cache-service.js'
-import { buildCbz, cbzFilename, imageExtFromUrl } from './cbz-builder.js'
+import { buildCbzFromCache } from './cbz-from-cache.js'
+import { CBZ_CHAPTERS_PER_FILE, cbzPartFilename, imageExtFromUrl } from './cbz-builder.js'
 import { buildComicFolder, folderFilename } from './folder-builder.js'
 import { buildEpub, epubFilename } from './epub-builder.js'
 import { buildTxt, txtFilename } from './txt-builder.js'
@@ -30,9 +32,15 @@ export interface DownloadOptions {
 }
 
 export interface DownloadResult {
-  data: Uint8Array
   filename: string
   mimeType: string
+  data?: Uint8Array
+  /** 大文件（如 CBZ）流式写入磁盘后的路径，避免超过 Node 2GB 内存限制 */
+  filePath?: string
+  /** 已写入本地缓存目录，无需浏览器下载 */
+  localExport?: boolean
+  exportDir?: string
+  exportedFiles?: string[]
 }
 
 const COMIC_CHAPTER_CONCURRENCY = 3
@@ -128,15 +136,14 @@ export class DownloadService {
     if (source.bookSourceType !== 2)
       throw new Error('该书源不是漫画类型，请使用 EPUB 或 TXT 下载')
 
-    const comicChapters = await this.fetchComicChapters(
-      source,
-      bookUrl,
-      chapters,
-      detail.name,
-      options.onProgress,
-    )
-
     if (format === 'folder') {
+      const comicChapters = await this.fetchComicChapters(
+        source,
+        bookUrl,
+        chapters,
+        detail.name,
+        options.onProgress,
+      )
       options.onProgress?.({ phase: 'pack', current: 1, total: 1, message: '打包文件夹' })
       const data = await buildComicFolder(detail.name, comicChapters)
       return {
@@ -146,18 +153,102 @@ export class DownloadService {
       }
     }
 
-    const pages = comicChapters.flatMap(ch => ch.pages)
-    if (!pages.length)
-      throw new Error('未获取到漫画图片')
+    if (!this.comicCache)
+      throw new Error('CBZ 导出需要本地缓存服务')
 
-    options.onProgress?.({ phase: 'pack', current: 1, total: 1, message: '打包 CBZ' })
-    const data = await buildCbz(pages)
+    await this.ensureComicChaptersCached(
+      source,
+      bookUrl,
+      chapters,
+      detail.name,
+      options.onProgress,
+    )
+
+    const bookDir = this.comicCache.getBookDir(source.id, bookUrl)
+    const exportedFiles: string[] = []
+    const partCount = Math.ceil(chapters.length / CBZ_CHAPTERS_PER_FILE)
+
+    for (let partIndex = 0; partIndex < partCount; partIndex++) {
+      const chunkStart = partIndex * CBZ_CHAPTERS_PER_FILE
+      const chunk = chapters.slice(chunkStart, chunkStart + CBZ_CHAPTERS_PER_FILE)
+      const chapterStart = start + chunkStart + 1
+      const chapterEnd = start + chunkStart + chunk.length
+
+      options.onProgress?.({
+        phase: 'pack',
+        current: partIndex + 1,
+        total: partCount,
+        message: `打包 CBZ ${chapterStart}-${chapterEnd}`,
+      })
+
+      const filename = cbzPartFilename(detail.name, chapterStart, chapterEnd)
+      const filePath = join(bookDir, filename)
+      await buildCbzFromCache(this.comicCache, source.id, bookUrl, chunk, filePath)
+      exportedFiles.push(filename)
+    }
 
     return {
-      data,
-      filename: cbzFilename(detail.name),
+      localExport: true,
+      exportDir: bookDir,
+      exportedFiles,
+      filename: exportedFiles[0] ?? cbzPartFilename(detail.name, 1, chapters.length),
       mimeType: 'application/vnd.comicbook+zip',
     }
+  }
+
+  private async ensureComicChaptersCached(
+    source: BookSource & { id: string },
+    bookUrl: string,
+    chapters: Chapter[],
+    bookName: string,
+    onProgress?: DownloadOptions['onProgress'],
+  ): Promise<void> {
+    let completed = 0
+    let cachedCount = 0
+
+    const report = (chapter: Chapter, fromCache: boolean) => {
+      completed++
+      if (fromCache)
+        cachedCount++
+      onProgress?.({
+        phase: 'chapters',
+        current: completed,
+        total: chapters.length,
+        message: fromCache ? `${chapter.name}（本地缓存）` : chapter.name,
+        fromCache,
+        cachedChapters: cachedCount,
+      })
+    }
+
+    await mapPool(
+      chapters,
+      COMIC_CHAPTER_CONCURRENCY,
+      async (chapter) => {
+        await withRetry(async () => {
+          if (this.comicCache && await this.comicCache.hasChapter(source.id, bookUrl, chapter.url)) {
+            report(chapter, true)
+            return
+          }
+
+          const content = await withRetry(
+            () => this.bookService.getChapterContent(source, chapter.url),
+            { retries: 3, delayMs: 2000 },
+          )
+          const images = content.images ?? []
+          if (!images.length)
+            throw new Error(`章节无图片：${chapter.name}`)
+
+          const pages = await mapPool(images, COMIC_IMAGE_CONCURRENCY, async (imageUrl) =>
+            this.fetchImage(imageUrl),
+          )
+
+          if (pages.length && this.comicCache)
+            await this.comicCache.writeChapterPages(source.id, bookUrl, chapter, pages, bookName)
+
+          report(chapter, false)
+        }, { retries: 2, delayMs: 2500 })
+      },
+    )
   }
 
   private async fetchComicChapters(

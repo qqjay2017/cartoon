@@ -31,6 +31,14 @@ export function cbzFilename(title: string): string {
   return sanitizeFilename(title, 'cbz')
 }
 
+/** 分卷 CBZ：书名_001-100.cbz */
+export function cbzPartFilename(title: string, startChapter: number, endChapter: number): string {
+  const base = sanitizeFilename(title, '')
+  return `${base}_${String(startChapter).padStart(3, '0')}-${String(endChapter).padStart(3, '0')}.cbz`
+}
+
+export const CBZ_CHAPTERS_PER_FILE = 100
+
 export function imageExtFromUrl(url: string, contentType?: string): string {
   const fromUrl = url.split('?')[0]?.match(/\.(jpe?g|png|webp|gif)$/i)?.[1]
   if (fromUrl)

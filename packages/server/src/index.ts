@@ -1,3 +1,6 @@
+import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import type { Readable } from 'node:stream'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -6,6 +9,7 @@ import {
   DownloadService,
   loadSourcesFromDir,
   SourceRegistry,
+  withRetry,
   type BinaryFetcher,
   type DownloadFormat,
   type Fetcher,
@@ -14,7 +18,7 @@ import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { DownloadJobManager } from './download-jobs.js'
-import { readProxyEnv, setupOutboundProxy } from './setup-proxy.js'
+import { readProxyEnv, proxyTroubleshootHint, setupOutboundProxy } from './setup-proxy.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(__dirname, '../../..')
@@ -27,7 +31,9 @@ const defaultHeaders = {
   'Accept-Language': 'zh-CN,zh;q=0.9',
 }
 
-const fetcher: Fetcher = async (url, options = {}) => {
+const FETCH_RETRY = { retries: 5, delayMs: 2000 }
+
+async function fetchText(url: string, options: Parameters<Fetcher>[1] = {}): Promise<string> {
   const controller = new AbortController()
   const timeoutMs = options.timeout ?? 60000
   const timeout = timeoutMs > 0
@@ -51,7 +57,7 @@ const fetcher: Fetcher = async (url, options = {}) => {
   }
 }
 
-const binaryFetcher: BinaryFetcher = async (url, options = {}) => {
+async function fetchBinary(url: string, options: Parameters<BinaryFetcher>[1] = {}): Promise<{ data: Uint8Array, contentType?: string }> {
   const controller = new AbortController()
   const timeoutMs = options.timeout ?? 180000
   const timeout = timeoutMs > 0
@@ -83,6 +89,12 @@ const binaryFetcher: BinaryFetcher = async (url, options = {}) => {
   }
 }
 
+const fetcher: Fetcher = (url, options = {}) =>
+  withRetry(() => fetchText(url, options), FETCH_RETRY)
+
+const binaryFetcher: BinaryFetcher = (url, options = {}) =>
+  withRetry(() => fetchBinary(url, options), FETCH_RETRY)
+
 const sources = await loadSourcesFromDir(remoteDir)
 const bookService = new BookService({ fetcher })
 const comicCache = new ComicCacheService({ projectRoot: rootDir, bookService, binaryFetcher })
@@ -99,6 +111,19 @@ app.use('*', cors())
 function encodeContentDisposition(filename: string): string {
   const encoded = encodeURIComponent(filename)
   return `attachment; filename="${filename.replace(/"/g, '')}"; filename*=UTF-8''${encoded}`
+}
+
+function createReadableStreamFromNodeStream(stream: Readable): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      stream.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+      stream.on('end', () => controller.close())
+      stream.on('error', error => controller.error(error))
+    },
+    cancel() {
+      stream.destroy()
+    },
+  })
 }
 
 app.get('/api/health', c => c.json({ ok: true, proxy: readProxyEnv() }))
@@ -251,19 +276,23 @@ app.get('/api/download/jobs/:id', (c) => {
     progress: job.progress,
     error: job.error,
     filename: job.filename,
+    localExport: job.localExport,
+    exportDir: job.exportDir,
+    exportedFiles: job.exportedFiles,
   })
 })
 
 app.get('/api/download/jobs/:id/file', async (c) => {
   const jobId = c.req.param('id')
-  const file = await downloadJobs.readFile(jobId)
+  const file = await downloadJobs.getFile(jobId)
   if (!file)
     return c.json({ error: 'file not ready' }, 404)
 
-  const response = new Response(new Uint8Array(file.data), {
+  const response = new Response(createReadableStreamFromNodeStream(createReadStream(file.path)), {
     headers: {
       'Content-Type': file.mimeType,
       'Content-Disposition': encodeContentDisposition(file.filename),
+      'Content-Length': String(file.size),
     },
   })
 
@@ -293,6 +322,20 @@ app.get('/api/download', async (c) => {
       start: start === undefined ? undefined : Number(start),
       end: end === undefined ? undefined : Number(end),
     })
+
+    if (result.filePath) {
+      const info = await stat(result.filePath)
+      return new Response(createReadableStreamFromNodeStream(createReadStream(result.filePath)), {
+        headers: {
+          'Content-Type': result.mimeType,
+          'Content-Disposition': encodeContentDisposition(result.filename),
+          'Content-Length': String(info.size),
+        },
+      })
+    }
+
+    if (!result.data)
+      return c.json({ error: 'download result empty' }, 500)
 
     return new Response(Buffer.from(result.data), {
       headers: {
@@ -419,8 +462,10 @@ app.get('/api/proxy', async (c) => {
 const port = Number(process.env.PORT ?? 8787)
 console.log(`[cartoon] loaded ${sources.length} sources from ${remoteDir}`)
 console.log(`[cartoon] comic cache dir: ${comicCache.getCacheRoot()}`)
-if (proxyEnv.active)
+if (proxyEnv.active) {
   console.log(`[cartoon] outbound proxy: ${proxyEnv.display}`)
+  console.log(`[cartoon] ${proxyTroubleshootHint()}`)
+}
 else
   console.log('[cartoon] outbound proxy: (none)')
 console.log(`[cartoon] server http://127.0.0.1:${port}`)

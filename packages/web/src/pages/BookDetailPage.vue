@@ -29,6 +29,7 @@ const loading = ref(true)
 const error = ref('')
 const downloading = ref(false)
 const downloadError = ref('')
+const downloadMessage = ref('')
 const downloadFormat = ref<DownloadFormat>('epub')
 const downloadJob = ref<DownloadJobSnapshot | null>(null)
 
@@ -38,8 +39,11 @@ const downloadPercent = computed(() => {
     return 0
   if (progress.phase === 'toc')
     return 8
-  if (progress.phase === 'pack')
+  if (progress.phase === 'pack') {
+    if (progress.total > 1)
+      return Math.min(98, Math.round(90 + (progress.current / progress.total) * 8))
     return 98
+  }
   if (!progress.total)
     return 10
   return Math.min(95, Math.round(10 + (progress.current / progress.total) * 85))
@@ -51,8 +55,11 @@ const downloadStatusText = computed(() => {
     return '准备整本下载...'
   if (progress.phase === 'toc')
     return progress.message ?? '获取目录'
-  if (progress.phase === 'pack')
+  if (progress.phase === 'pack') {
+    if (progress.total > 1)
+      return `${progress.message ?? '正在打包'} (${progress.current}/${progress.total})`
     return progress.message ?? '正在打包'
+  }
   const cacheHint = progress.cachedChapters
     ? ` · 已用缓存 ${progress.cachedChapters} 章`
     : ''
@@ -200,10 +207,11 @@ async function downloadBook() {
 
   downloading.value = true
   downloadError.value = ''
+  downloadMessage.value = ''
   downloadJob.value = null
 
   try {
-    await api.downloadBookWithProgress(
+    const result = await api.downloadBookWithProgress(
       detail.value.sourceId,
       detail.value.bookUrl,
       downloadFormat.value,
@@ -211,6 +219,11 @@ async function downloadBook() {
         downloadJob.value = job
       },
     )
+
+    if ('localExport' in result && result.localExport) {
+      const files = result.exportedFiles.join('、')
+      downloadMessage.value = `已导出 ${result.exportedFiles.length} 个 CBZ 到 ${result.exportDir}：${files}`
+    }
   }
   catch (e) {
     downloadError.value = e instanceof Error ? e.message : '下载失败'
@@ -303,7 +316,7 @@ async function saveCacheDir() {
             </option>
           </select>
           <button :disabled="downloading" @click="downloadBook">
-            {{ downloading ? `整本导出中 ${downloadPercent}%` : '整本下载导出' }}
+            {{ downloading ? `导出中 ${downloadPercent}%` : (isComic && downloadFormat === 'cbz' ? '导出 CBZ 到本地' : '整本下载导出') }}
           </button>
         </div>
         <div v-if="downloading" class="download-progress-wrap">
@@ -313,6 +326,10 @@ async function saveCacheDir() {
           <p class="meta">{{ downloadStatusText }}</p>
         </div>
         <p v-if="downloadError" class="meta" style="color: #f87171; margin-top: 8px;">{{ downloadError }}</p>
+        <p v-else-if="downloadMessage" class="meta" style="margin-top: 8px;">{{ downloadMessage }}</p>
+        <p v-else-if="isComic && downloadFormat === 'cbz'" class="meta" style="margin-top: 8px;">
+          漫画 CBZ 按每 100 章分卷，导出后保存在本地缓存目录，不会触发浏览器下载。
+        </p>
         <p v-else-if="isComic && !downloading && cacheStatus?.cachedChapters" class="meta" style="margin-top: 8px;">
           导出时将优先读取本地缓存（已缓存 {{ cacheStatus.cachedChapters }}/{{ chapters.length }} 章），缺失章节会自动补全并写入缓存。
         </p>

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { DownloadProgress, DownloadResult } from '@cartoon/core'
@@ -13,7 +13,18 @@ export interface DownloadJob {
   filename?: string
   mimeType?: string
   filePath?: string
+  ownsFile?: boolean
+  localExport?: boolean
+  exportDir?: string
+  exportedFiles?: string[]
   createdAt: number
+}
+
+export interface DownloadJobFile {
+  path: string
+  filename: string
+  mimeType: string
+  size: number
 }
 
 export class DownloadJobManager {
@@ -56,15 +67,40 @@ export class DownloadJobManager {
         job.progress = progress
       })
 
-      const dir = join(this.outputDir, id)
-      await mkdir(dir, { recursive: true })
-      const filePath = join(dir, result.filename)
-      await writeFile(filePath, result.data)
+      if (result.localExport) {
+        job.localExport = true
+        job.exportDir = result.exportDir
+        job.exportedFiles = result.exportedFiles
+        job.filename = result.exportedFiles?.[0] ?? result.filename
+        job.mimeType = result.mimeType
+        job.status = 'done'
+        job.progress = {
+          phase: 'pack',
+          current: result.exportedFiles?.length ?? 1,
+          total: result.exportedFiles?.length ?? 1,
+          message: `已导出 ${result.exportedFiles?.length ?? 0} 个 CBZ`,
+        }
+        return
+      }
+
+      if (result.filePath) {
+        job.filePath = result.filePath
+        job.ownsFile = false
+      }
+      else if (result.data) {
+        const dir = join(this.outputDir, id)
+        await mkdir(dir, { recursive: true })
+        job.filePath = join(dir, result.filename)
+        await writeFile(job.filePath, result.data)
+        job.ownsFile = true
+      }
+      else {
+        throw new Error('download result missing data or filePath')
+      }
 
       job.status = 'done'
       job.filename = result.filename
       job.mimeType = result.mimeType
-      job.filePath = filePath
       job.progress = { phase: 'pack', current: 1, total: 1, message: '完成' }
     }
     catch (error) {
@@ -72,20 +108,39 @@ export class DownloadJobManager {
       const message = error instanceof Error ? error.message : 'download failed'
       job.error = message.includes('aborted') || message.includes('Aborted')
         ? '网络超时或连接中断（已自动重试），建议先「缓存全部」再导出'
-        : message
+        : message.includes('fetch failed') || message.toLowerCase().includes('econnreset')
+          ? '代理或目标站点 TLS 连接不稳定（已自动重试），可试 NO_PROXY=manhuafree.com 或 CARTOON_PROXY=direct'
+          : message.includes('2') && message.toLowerCase().includes('gb')
+            ? '文件过大，已改为流式打包；若仍失败请重试或检查磁盘空间'
+            : message
     }
   }
 
-  async readFile(id: string): Promise<{ data: Buffer, filename: string, mimeType: string } | null> {
+  async getFile(id: string): Promise<DownloadJobFile | null> {
     const job = this.jobs.get(id)
     if (!job?.filePath || job.status !== 'done')
       return null
 
-    const data = await readFile(job.filePath)
+    const info = await stat(job.filePath)
     return {
-      data,
+      path: job.filePath,
       filename: job.filename ?? 'download.bin',
       mimeType: job.mimeType ?? 'application/octet-stream',
+      size: info.size,
+    }
+  }
+
+  /** @deprecated use getFile for streaming downloads */
+  async readFile(id: string): Promise<{ data: Buffer, filename: string, mimeType: string } | null> {
+    const file = await this.getFile(id)
+    if (!file)
+      return null
+
+    const data = await readFile(file.path)
+    return {
+      data,
+      filename: file.filename,
+      mimeType: file.mimeType,
     }
   }
 
@@ -94,7 +149,7 @@ export class DownloadJobManager {
     if (!job)
       return
 
-    if (job.filePath) {
+    if (job.filePath && job.ownsFile) {
       const dir = join(this.outputDir, id)
       await rm(dir, { recursive: true, force: true })
     }
