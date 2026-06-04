@@ -2,6 +2,62 @@
   min-height: 100vh;
 }
 
+.reader-chapter-head {
+  text-align: center;
+  margin-bottom: 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--reader-border);
+}
+
+.reader-chapter-heading {
+  margin: 0 0 10px;
+  font-size: 1.35rem;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--reader-text);
+}
+
+.reader-book-meta {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--reader-muted);
+}
+
+.reader-empty-chapter {
+  text-align: center;
+  color: var(--reader-muted);
+  padding: 32px 16px;
+}
+
+.reader-chapter-image {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto 12px;
+}
+
+.reader-chapter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 40px;
+  padding-top: 24px;
+  border-top: 1px solid var(--reader-border);
+}
+
+.reader-chapter-footer-hint {
+  margin: 20px 0 0;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--reader-muted);
+}
+
+a.reader-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 .reader {
   --reader-bg: #0f1115;
   --reader-text: #e8eaef;
@@ -152,18 +208,21 @@
 }
 
 .reader-novel {
-  max-width: 760px;
+  max-width: 42rem;
   margin: 0 auto;
-  padding: 32px 20px 48px;
+  padding: 28px 20px 56px;
+  font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
 }
 
 .reader-novel-content {
   word-break: break-word;
+  color: var(--reader-text);
 }
 
 .reader-novel-content p {
   text-indent: 2em;
-  margin: 0.8em 0;
+  margin: 0.75em 0;
+  line-height: inherit;
 }
 
 .reader-novel-tap-layer {
