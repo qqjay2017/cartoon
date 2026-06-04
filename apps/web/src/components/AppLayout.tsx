@@ -21,7 +21,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {nav.map(item => {
             const active = item.to === '/'
               ? pathname === '/'
-              : pathname.startsWith(item.to)
+              : item.to === '/config'
+                ? pathname.startsWith('/config') || pathname.startsWith('/search')
+                : pathname.startsWith(item.to)
             return (
               <Link
                 key={item.to}

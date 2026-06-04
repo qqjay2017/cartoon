@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api, proxyImage } from '~/lib/api'
 import { Button } from '~/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
@@ -19,10 +19,11 @@ export function BookDetailView({ bookshelfId }: Props) {
     queryFn: () => api.getBook(bookshelfId),
   })
 
-  const { data: tocData, isLoading: loadingToc, refetch: refetchToc } = useQuery({
+  const { data: tocData, isLoading: loadingToc, isError: tocError, error: tocErr, refetch: refetchToc } = useQuery({
     queryKey: ['toc', bookshelfId],
     queryFn: () => api.getToc(bookshelfId),
     enabled: Boolean(detail),
+    retry: 1,
   })
 
   const chapters = tocData?.chapters ?? []
@@ -33,11 +34,6 @@ export function BookDetailView({ bookshelfId }: Props) {
     enabled: chapters.length > 0,
     refetchInterval: q => (q.state.data?.caching ? 2000 : false),
   })
-
-  useEffect(() => {
-    if (!chapters.length && detail && !loadingToc)
-      void refetchToc()
-  }, [chapters.length, detail, loadingToc, refetchToc])
 
   async function cacheAll() {
     setCacheMsg('')
@@ -106,6 +102,19 @@ export function BookDetailView({ bookshelfId }: Props) {
         </CardHeader>
         <CardContent>
           <h3 className="font-medium mb-2">目录 {loadingToc ? '(加载中)' : `(${chapters.length})`}</h3>
+          {tocError && (
+            <p className="text-sm text-destructive mb-2">
+              {tocErr instanceof Error ? tocErr.message : '目录加载失败'}
+              {' '}
+              <button type="button" className="underline" onClick={() => void refetchToc()}>重试</button>
+            </p>
+          )}
+          {!loadingToc && !tocError && chapters.length === 0 && (
+            <p className="text-sm text-muted-foreground mb-2">
+              暂无章节，
+              <button type="button" className="underline" onClick={() => void refetchToc()}>重新拉取</button>
+            </p>
+          )}
           <div className="max-h-[420px] overflow-auto space-y-1">
             {chapters.map((ch, index) => (
               <button

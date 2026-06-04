@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, getReadingProgress, setReadingProgress } from '~/lib/api'
+import { api, getReadingProgress, proxyImage, setReadingProgress } from '~/lib/api'
 import {
   loadReaderSettings,
   saveReaderSettings,
@@ -202,7 +202,7 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
             {content?.images?.map((src, i) => (
               <img
                 key={i}
-                src={src}
+                src={proxyImage(src)}
                 alt=""
                 className="reader-chapter-image"
               />

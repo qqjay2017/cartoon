@@ -32,6 +32,26 @@ export function isRetryableNetworkError(error: unknown): boolean {
     || text.includes('disconnected before secure tls')
 }
 
+export function isRetryableHttpError(error: unknown): boolean {
+  const text = collectErrorSignals(error)
+  return text.includes('429')
+    || text.includes('too many requests')
+    || text.includes('http 502')
+    || text.includes('http 503')
+    || text.includes('http 504')
+}
+
+export function isRetryableError(error: unknown): boolean {
+  return isRetryableNetworkError(error) || isRetryableHttpError(error)
+}
+
+function retryDelayMs(baseDelayMs: number, attempt: number, error: unknown): number {
+  const text = collectErrorSignals(error)
+  if (text.includes('429') || text.includes('too many requests'))
+    return baseDelayMs * (2 ** attempt) * 2
+  return baseDelayMs * (attempt + 1)
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options?: { retries?: number, delayMs?: number },
@@ -46,9 +66,9 @@ export async function withRetry<T>(
     }
     catch (error) {
       lastError = error
-      if (!isRetryableNetworkError(error) || attempt >= retries)
+      if (!isRetryableError(error) || attempt >= retries)
         throw error
-      await new Promise(resolve => setTimeout(resolve, delayMs * (attempt + 1)))
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs(delayMs, attempt, error)))
     }
   }
 

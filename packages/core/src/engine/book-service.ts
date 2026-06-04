@@ -278,10 +278,9 @@ export class BookService {
     let bookPageHtml = ''
     const tocUrlBeforeResolve = resolvedTocUrl
 
-    if (source.ruleBookInfo?.tocUrl) {
+    if (source.ruleBookInfo?.tocUrl && !isResolvedTocApiUrl(resolvedTocUrl)) {
       const engine = this.createEngine(source)
-      if (!isResolvedTocApiUrl(resolvedTocUrl))
-        bookPageHtml = await this.fetchSourceText(source, resolvedTocUrl)
+      bookPageHtml = await this.fetchSourceText(source, resolvedTocUrl)
 
       const normalized = engine.evaluate(source.ruleBookInfo.tocUrl, {
         baseUrl: resolvedTocUrl,

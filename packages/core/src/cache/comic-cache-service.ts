@@ -8,6 +8,25 @@ import type { BookSource, Chapter } from '../types/book-source.js'
 import type { BinaryFetcher } from '../utils/http.js'
 import { hashKey, normalizeUrl, sanitizePathSegment } from './cache-keys.js'
 import { mapPool } from '../utils/async-pool.js'
+import { withRetry } from '../utils/retry.js'
+
+/** 普通书源：多章节并行缓存 */
+const COMIC_CHAPTER_CONCURRENCY = 5
+/** mgsearcher 章节 API 有频控，并发略低 */
+const MGSEARCHER_CHAPTER_CONCURRENCY = 4
+/** 单章内多图并行下载（CDN） */
+const COMIC_IMAGE_FETCH_CONCURRENCY = 6
+
+function isRateLimitedChapterApi(url: string): boolean {
+  return /mgsearcher\.com/i.test(url)
+}
+
+function chapterConcurrency(chapters: Chapter[]): number {
+  const sample = chapters.find(ch => ch.url)?.url ?? ''
+  return isRateLimitedChapterApi(sample)
+    ? MGSEARCHER_CHAPTER_CONCURRENCY
+    : COMIC_CHAPTER_CONCURRENCY
+}
 
 export interface ComicCacheConfigFile {
   comicDir?: string
@@ -298,13 +317,19 @@ export class ComicCacheService {
     if (await this.hasChapter(source.id, bookUrl, chapter.url))
       return true
 
-    const content = await this.options.bookService.getChapterContent(source, chapter.url)
+    const content = await withRetry(
+      () => this.options.bookService.getChapterContent(source, chapter.url),
+      { retries: 6, delayMs: 2500 },
+    )
     const imageUrls = content.images ?? []
     if (!imageUrls.length)
       return false
 
-    const pages = await mapPool(imageUrls, 3, async (imageUrl) => {
-      const fetched = await this.options.binaryFetcher(imageUrl)
+    const pages = await mapPool(imageUrls, COMIC_IMAGE_FETCH_CONCURRENCY, async (imageUrl) => {
+      const fetched = await withRetry(
+        () => this.options.binaryFetcher(imageUrl),
+        { retries: 4, delayMs: 1500 },
+      )
       return {
         data: fetched.data,
         ext: imageExtFromUrl(imageUrl, fetched.contentType),
@@ -388,22 +413,23 @@ export class ComicCacheService {
         message: pending.length ? '准备缓存' : '已全部缓存',
       })
 
-      for (let i = 0; i < pending.length; i++) {
-        const chapter = pending[i]!
+      let completed = 0
+      const concurrency = chapterConcurrency(pending)
+      await mapPool(pending, concurrency, async (chapter) => {
+        try {
+          await this.cacheChapter(source, bookUrl, chapter, detail.name)
+        }
+        catch (error) {
+          console.error(`[comic-cache] ${chapter.name}:`, error)
+        }
+        completed++
         this.jobs.set(key, {
           running: true,
-          current: i,
+          current: completed,
           total: pending.length,
           message: chapter.name,
         })
-        await this.cacheChapter(source, bookUrl, chapter, detail.name)
-        this.jobs.set(key, {
-          running: true,
-          current: i + 1,
-          total: pending.length,
-          message: chapter.name,
-        })
-      }
+      })
 
       this.jobs.set(key, {
         running: false,

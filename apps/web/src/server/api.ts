@@ -487,8 +487,8 @@ app.get('/api/chapter', async (c) => {
         return c.json({ text: cached.text, cached: true })
     }
 
-    if (source.bookSourceType === 2 && bookUrl) {
-      const cached = await app.comicCache.getCachedChapterContent(source.id, bookUrl, chapterUrl)
+    if (source.bookSourceType === 2) {
+      const cached = await app.comicCache.getCachedChapterContent(source.id, item.bookUrl, chapterUrl)
       if (cached)
         return c.json({ ...cached, cached: true })
     }
@@ -660,10 +660,13 @@ app.get('/api/cache/status', async (c) => {
   const totalChapters = Number(c.req.query('totalChapters') ?? 0)
 
   if (bookshelfIdParam) {
-    const { db } = getDb()
-    const app = await getAppContext()
-    const cached = (await listCachedChapterIds(db, bookshelfIdParam)).length
-    return c.json(app.bookshelfCache.getStatus(bookshelfIdParam, totalChapters, cached))
+    const ctx = await resolveBookshelfContext(bookshelfIdParam)
+    if (!ctx)
+      return c.json({ error: 'not found' }, 404)
+    if (ctx.source.bookSourceType === 2)
+      return c.json(await ctx.app.comicCache.getStatus(ctx.source.id, ctx.item.bookUrl, totalChapters))
+    const cached = (await listCachedChapterIds(ctx.db, bookshelfIdParam)).length
+    return c.json(ctx.app.bookshelfCache.getStatus(bookshelfIdParam, totalChapters, cached))
   }
 
   const sourceId = c.req.query('sourceId')
@@ -689,14 +692,21 @@ app.post('/api/cache/all', async (c) => {
     const chapters = await getChapterList(ctx.db, ctx.item.id)
     if (!chapters.length)
       return c.json({ error: 'toc empty, open book first' }, 400)
-    const result = ctx.app.bookshelfCache.startCacheAll(
-      ctx.source,
-      ctx.item.id,
-      ctx.item.bookUrl,
-      chapters,
-      ctx.item.name,
-    )
-    return c.json(result)
+    if (ctx.source.bookSourceType === 2)
+      return c.json(ctx.app.comicCache.startCacheAll(ctx.source, ctx.item.bookUrl))
+
+    if (ctx.source.bookSourceType === 0) {
+      const result = ctx.app.bookshelfCache.startCacheAll(
+        ctx.source,
+        ctx.item.id,
+        ctx.item.bookUrl,
+        chapters,
+        ctx.item.name,
+      )
+      return c.json(result)
+    }
+
+    return c.json({ error: 'unsupported source type' }, 400)
   }
 
   if (!body.sourceId || !body.bookUrl)
@@ -756,7 +766,13 @@ app.delete('/api/cache', async (c) => {
   const app = await getAppContext()
 
   if (bookshelfIdParam) {
-    await app.bookshelfCache.clearBook(bookshelfIdParam)
+    const ctx = await resolveBookshelfContext(bookshelfIdParam)
+    if (!ctx)
+      return c.json({ error: 'not found' }, 404)
+    if (ctx.source.bookSourceType === 2)
+      await app.comicCache.clearBook(ctx.source.id, ctx.item.bookUrl)
+    else
+      await app.bookshelfCache.clearBook(bookshelfIdParam)
     return c.json({ ok: true })
   }
 

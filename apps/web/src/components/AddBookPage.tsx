@@ -1,10 +1,11 @@
-import type { SearchBook } from '@cartoon/core'
+import type { BookSourceType } from '@cartoon/core'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
-import { api, proxyImage } from '~/lib/api'
+import { api } from '~/lib/api'
+import { SEARCH_TYPE_OPTIONS } from '~/lib/search-types'
 import { Button } from '~/components/ui/button'
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '~/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 import { Input } from '~/components/ui/input'
 import { Label } from '~/components/ui/label'
 
@@ -12,44 +13,25 @@ export function AddBookPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [keyword, setKeyword] = useState('')
+  const [searchType, setSearchType] = useState<BookSourceType>(0)
   const [manualSourceId, setManualSourceId] = useState('')
   const [manualUrl, setManualUrl] = useState('')
   const [error, setError] = useState('')
-  const [results, setResults] = useState<SearchBook[]>([])
 
   const { data: sources = [] } = useQuery({
     queryKey: ['sources'],
-    queryFn: () => api.listSources(0),
+    queryFn: () => api.listSources(),
   })
 
-  async function search() {
-    if (!keyword.trim())
+  function goSearch() {
+    const q = keyword.trim()
+    if (!q)
       return
     setError('')
-    try {
-      const data = await api.search(keyword.trim(), 0)
-      setResults(data.results)
-    }
-    catch (e) {
-      setError(e instanceof Error ? e.message : '搜索失败')
-    }
-  }
-
-  async function addToBookshelf(book: SearchBook) {
-    try {
-      const { id } = await api.addBookshelf({
-        sourceId: book.sourceId,
-        bookUrl: book.bookUrl,
-        name: book.name,
-        author: book.author,
-        coverUrl: book.coverUrl,
-      })
-      await queryClient.invalidateQueries({ queryKey: ['bookshelf'] })
-      navigate({ to: '/book/$bookshelfId', params: { bookshelfId: id } })
-    }
-    catch (e) {
-      setError(e instanceof Error ? e.message : '添加失败')
-    }
+    navigate({
+      to: '/search',
+      search: { q, type: searchType },
+    })
   }
 
   async function openManual() {
@@ -80,31 +62,36 @@ export function AddBookPage() {
           <CardTitle>搜索添加</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap gap-2">
+          <div className="space-y-2">
+            <Label htmlFor="search-keyword">关键词</Label>
             <Input
-              className="max-w-md flex-1"
+              id="search-keyword"
+              className="max-w-lg"
               value={keyword}
               onChange={e => setKeyword(e.target.value)}
-              placeholder="输入关键词"
-              onKeyDown={e => e.key === 'Enter' && void search()}
+              placeholder="书名、作者等"
+              onKeyDown={e => e.key === 'Enter' && goSearch()}
             />
-            <Button onClick={() => void search()}>搜索</Button>
           </div>
-          {results.length > 0 && (
-            <div className="grid gap-4 sm:grid-cols-2">
-              {results.map(book => (
-                <Card key={`${book.sourceId}-${book.bookUrl}`}>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base">{book.name}</CardTitle>
-                    <p className="text-sm text-muted-foreground">{book.author} · {book.sourceName}</p>
-                  </CardHeader>
-                  <CardFooter>
-                    <Button size="sm" onClick={() => void addToBookshelf(book)}>加入书架</Button>
-                  </CardFooter>
-                </Card>
+          <div className="space-y-2">
+            <Label>搜索类型</Label>
+            <div className="flex flex-wrap gap-2">
+              {SEARCH_TYPE_OPTIONS.map(opt => (
+                <Button
+                  key={opt.value}
+                  type="button"
+                  size="sm"
+                  variant={searchType === opt.value ? 'default' : 'outline'}
+                  onClick={() => setSearchType(opt.value)}
+                >
+                  {opt.label}
+                </Button>
               ))}
             </div>
-          )}
+          </div>
+          <Button onClick={goSearch} disabled={!keyword.trim()}>
+            搜索
+          </Button>
         </CardContent>
       </Card>
 

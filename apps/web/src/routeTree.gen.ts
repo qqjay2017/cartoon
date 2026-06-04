@@ -13,6 +13,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as BookBookshelfIdRouteImport } from './routes/book.$bookshelfId'
 import { Route as ApiSplatRouteImport } from './routes/api/$'
+import { Route as AppSearchRouteImport } from './routes/_app/search'
 import { Route as AppConfigRouteImport } from './routes/_app/config'
 import { Route as AppSourcesIndexRouteImport } from './routes/_app/sources/index'
 import { Route as ReadBookshelfIdChapterIndexRouteImport } from './routes/read.$bookshelfId.$chapterIndex'
@@ -37,6 +38,11 @@ const ApiSplatRoute = ApiSplatRouteImport.update({
   id: '/api/$',
   path: '/api/$',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AppSearchRoute = AppSearchRouteImport.update({
+  id: '/search',
+  path: '/search',
+  getParentRoute: () => AppRoute,
 } as any)
 const AppConfigRoute = AppConfigRouteImport.update({
   id: '/config',
@@ -68,6 +74,7 @@ const AppSourcesSourceIdRoute = AppSourcesSourceIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/config': typeof AppConfigRoute
+  '/search': typeof AppSearchRoute
   '/api/$': typeof ApiSplatRoute
   '/book/$bookshelfId': typeof BookBookshelfIdRoute
   '/sources/$sourceId': typeof AppSourcesSourceIdRoute
@@ -77,6 +84,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/config': typeof AppConfigRoute
+  '/search': typeof AppSearchRoute
   '/api/$': typeof ApiSplatRoute
   '/book/$bookshelfId': typeof BookBookshelfIdRoute
   '/': typeof AppIndexRoute
@@ -89,6 +97,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/_app/config': typeof AppConfigRoute
+  '/_app/search': typeof AppSearchRoute
   '/api/$': typeof ApiSplatRoute
   '/book/$bookshelfId': typeof BookBookshelfIdRoute
   '/_app/': typeof AppIndexRoute
@@ -102,6 +111,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/config'
+    | '/search'
     | '/api/$'
     | '/book/$bookshelfId'
     | '/sources/$sourceId'
@@ -111,6 +121,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/config'
+    | '/search'
     | '/api/$'
     | '/book/$bookshelfId'
     | '/'
@@ -122,6 +133,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/_app/config'
+    | '/_app/search'
     | '/api/$'
     | '/book/$bookshelfId'
     | '/_app/'
@@ -168,6 +180,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/search': {
+      id: '/_app/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof AppSearchRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/config': {
       id: '/_app/config'
       path: '/config'
@@ -208,6 +227,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppConfigRoute: typeof AppConfigRoute
+  AppSearchRoute: typeof AppSearchRoute
   AppIndexRoute: typeof AppIndexRoute
   AppSourcesSourceIdRoute: typeof AppSourcesSourceIdRoute
   AppSourcesNewRoute: typeof AppSourcesNewRoute
@@ -216,6 +236,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppConfigRoute: AppConfigRoute,
+  AppSearchRoute: AppSearchRoute,
   AppIndexRoute: AppIndexRoute,
   AppSourcesSourceIdRoute: AppSourcesSourceIdRoute,
   AppSourcesNewRoute: AppSourcesNewRoute,
