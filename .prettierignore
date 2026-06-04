@@ -1,0 +1,6 @@
+dist
+node_modules
+.output
+pnpm-lock.yaml
+packages/db/drizzle
+data

@@ -44,6 +44,7 @@ export interface BookSource {
   bookSourceUrl: string
   bookSourceType: BookSourceType
   bookSourceGroup?: string
+  bookUrlPattern?: string
   enabled?: boolean
   enabledCookieJar?: boolean
   header?: string
@@ -77,6 +78,8 @@ export interface BookDetail extends SearchBook {
 export interface Chapter {
   name: string
   url: string
+  /** 站点章节 ID，如 genwohua 的 1972793 */
+  id?: string
   updateTime?: string
 }
 

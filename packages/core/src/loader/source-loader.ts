@@ -1,11 +1,10 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BookSource } from '../types/book-source.js'
-import { sourceIdFromName } from '../utils/http.js'
 
 export interface LoadedSource extends BookSource {
   id: string
-  fileName: string
+  fileName?: string
 }
 
 export async function loadSourcesFromDir(dir: string): Promise<LoadedSource[]> {
@@ -24,9 +23,10 @@ export async function loadSourcesFromDir(dir: string): Promise<LoadedSource[]> {
       if (source.enabled === false)
         continue
 
+      const id = entry.name.replace(/\.json$/i, '')
       sources.push({
         ...source,
-        id: sourceIdFromName(source.bookSourceName),
+        id,
         fileName: entry.name,
       })
     }

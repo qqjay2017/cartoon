@@ -3,16 +3,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pnpm -r --parallel dev",
-    "dev:server": "pnpm --filter @cartoon/server dev",
-    "dev:web": "pnpm --filter @cartoon/web dev",
+    "dev": "pnpm --filter @cartoon/web dev",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "db:migrate": "pnpm --filter @cartoon/db db:migrate",
+    "db:seed": "pnpm --filter @cartoon/db db:seed",
+    "test": "pnpm --filter @cartoon/core test",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "^3.5.3"
   },
   "engines": {
     "node": ">=20"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": ["esbuild"],
+    "overrides": {
+      "vite": "^7.3.5"
+    }
   }
 }

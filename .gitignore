@@ -3,6 +3,7 @@ dist
 .DS_Store
 *.log
 .env
+data/postgres
 cache/*
 !cache/.gitkeep
 !cache/config.json

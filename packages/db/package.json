@@ -1,5 +1,5 @@
 {
-  "name": "@cartoon/core",
+  "name": "@cartoon/db",
   "version": "0.1.0",
   "type": "module",
   "exports": {
@@ -9,22 +9,22 @@
     }
   },
   "scripts": {
-    "dev": "tsup --watch",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/migrate.ts",
+    "db:seed": "tsx src/seed.ts"
   },
   "dependencies": {
-    "archiver": "7.0.1",
-    "cheerio": "^1.0.0",
-    "jsonpath-plus": "^10.3.0",
-    "jszip": "^3.10.1"
+    "@cartoon/core": "workspace:*",
+    "drizzle-orm": "^0.44.2",
+    "postgres": "^3.4.7"
   },
   "devDependencies": {
-    "@types/archiver": "^7.0.0",
     "@types/node": "^22.15.21",
+    "drizzle-kit": "^0.31.4",
     "tsup": "^8.4.0",
-    "typescript": "^5.8.3",
-    "vitest": "^3.2.4"
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
   }
 }

@@ -12,6 +12,7 @@ export {
   type CachedNovelChapterMeta,
   type NovelBookCacheMeta,
 } from './cache/novel-cache-service.js'
+export { NovelBookshelfCache } from './cache/novel-bookshelf-cache.js'
 export * from './cache/cache-keys.js'
 export * from './download/download-service.js'
 export * from './download/epub-builder.js'
@@ -22,4 +23,5 @@ export * from './download/folder-builder.js'
 export * from './utils/retry.js'
 export * from './utils/async-pool.js'
 export * from './utils/http.js'
+export * from './utils/site-ids.js'
 export * from './utils/legado-search.js'

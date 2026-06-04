@@ -9,6 +9,11 @@ export class SourceRegistry {
     sources: LoadedSource[],
     private bookService: BookService,
   ) {
+    this.reload(sources)
+  }
+
+  reload(sources: LoadedSource[]) {
+    this.sources.clear()
     for (const source of sources)
       this.sources.set(source.id, source)
   }
