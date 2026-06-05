@@ -137,6 +137,19 @@ a.reader-btn {
   gap: 8px;
 }
 
+.reader--comic {
+  --reader-bg: #333;
+  --reader-comic-bg: #333;
+  --reader-text: #e8eaef;
+  --reader-muted: #aaa;
+  --reader-panel: rgba(28, 28, 28, 0.94);
+  --reader-border: #444;
+}
+
+.reader--comic .reader-body {
+  background: #333;
+}
+
 .reader-bar.hidden {
   opacity: 0;
   pointer-events: none;
@@ -370,6 +383,26 @@ a.reader-btn {
   font-size: 0.8rem;
   z-index: 3;
   pointer-events: none;
+}
+
+.reader-page-indicator--scroll {
+  position: fixed;
+  bottom: 18px;
+  left: 14px;
+  transform: none;
+  z-index: 6;
+  padding: 5px 11px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  transition: bottom 0.2s ease;
+}
+
+.reader-page-indicator--scroll.with-bars {
+  bottom: 62px;
 }
 
 .reader-webtoon-hint {

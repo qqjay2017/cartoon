@@ -16,6 +16,8 @@ interface Props {
   onChapterChange: (index: number) => void
 }
 
+const COMIC_EDGE_RATIO = 0.18
+
 export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props) {
   const bodyRef = useRef<HTMLElement>(null)
   const [settings, setSettings] = useState<ReaderSettings>(() => ({
@@ -25,6 +27,7 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
   }))
   const [barsVisible, setBarsVisible] = useState(true)
   const [scrollPct, setScrollPct] = useState(0)
+  const [comicPageIndex, setComicPageIndex] = useState(0)
   const [tocOpen, setTocOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -48,6 +51,9 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
     enabled: Boolean(chapter),
   })
 
+  const isComic = book?.sourceType === 2
+  const images = content?.images ?? []
+
   useEffect(() => {
     setSettings(loadReaderSettings())
   }, [])
@@ -62,7 +68,10 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: 0 })
     setScrollPct(0)
-  }, [chapterIndex])
+    setComicPageIndex(0)
+    if (isComic)
+      setBarsVisible(false)
+  }, [chapterIndex, isComic])
 
   useEffect(() => {
     saveReaderSettings(settings)
@@ -89,6 +98,80 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
     setScrollPct(max > 0 ? (el.scrollTop / max) * 100 : 0)
   }, [])
 
+  const updateComicPageFromScroll = useCallback(() => {
+    const container = bodyRef.current
+    if (!container || !images.length)
+      return
+
+    const marker = container.scrollTop + container.clientHeight * 0.35
+    const pageEls = container.querySelectorAll<HTMLElement>('[data-comic-page]')
+    let index = 0
+    pageEls.forEach((el, i) => {
+      if (el.offsetTop <= marker)
+        index = i
+    })
+    setComicPageIndex(index)
+  }, [images.length])
+
+  const handleBodyScroll = useCallback(() => {
+    updateScrollProgress()
+    if (isComic) {
+      updateComicPageFromScroll()
+      setBarsVisible(false)
+    }
+  }, [isComic, updateScrollProgress, updateComicPageFromScroll])
+
+  useEffect(() => {
+    if (!isComic || !images.length)
+      return
+
+    const root = bodyRef.current
+    if (!root)
+      return
+
+    const ratios = new Map<number, number>()
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const idx = Number((entry.target as HTMLElement).dataset.comicPage ?? 0)
+          ratios.set(idx, entry.isIntersecting ? entry.intersectionRatio : 0)
+        }
+        let bestIdx = 0
+        let bestRatio = 0
+        ratios.forEach((ratio, idx) => {
+          if (ratio > bestRatio) {
+            bestRatio = ratio
+            bestIdx = idx
+          }
+        })
+        if (bestRatio > 0)
+          setComicPageIndex(bestIdx)
+      },
+      {
+        root,
+        threshold: [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1],
+      },
+    )
+
+    root.querySelectorAll('[data-comic-page]').forEach(node => observer.observe(node))
+    return () => observer.disconnect()
+  }, [isComic, images, chapterIndex])
+
+  useEffect(() => {
+    if (!isComic || tocOpen || settingsOpen)
+      return
+
+    function onMouseMove(e: MouseEvent) {
+      const y = e.clientY
+      const h = window.innerHeight
+      if (y < h * COMIC_EDGE_RATIO || y > h * (1 - COMIC_EDGE_RATIO))
+        setBarsVisible(true)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    return () => window.removeEventListener('mousemove', onMouseMove)
+  }, [isComic, tocOpen, settingsOpen])
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName
@@ -101,13 +184,18 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
       else if (e.key === 'Enter' && !e.shiftKey)
         setTocOpen(true)
       else if (e.key === 'Escape') {
-        setTocOpen(false)
-        setSettingsOpen(false)
+        if (tocOpen || settingsOpen) {
+          setTocOpen(false)
+          setSettingsOpen(false)
+        }
+        else if (isComic) {
+          setBarsVisible(false)
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [goPrev, goNext])
+  }, [goPrev, goNext, isComic, tocOpen, settingsOpen])
 
   function patchSettings(patch: Partial<ReaderSettings>) {
     setSettings(prev => ({ ...prev, ...patch }))
@@ -118,17 +206,38 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
     onChapterChange(index)
   }
 
+  function handleComicClick() {
+    if (tocOpen || settingsOpen)
+      return
+    setBarsVisible(v => !v)
+  }
+
+  function openPanel(kind: 'toc' | 'settings') {
+    if (isComic)
+      setBarsVisible(true)
+    if (kind === 'toc') {
+      setTocOpen(v => !v)
+      setSettingsOpen(false)
+    }
+    else {
+      setSettingsOpen(v => !v)
+      setTocOpen(false)
+    }
+  }
+
   const progressLabel = chapters.length
     ? `第 ${chapterIndex + 1} / ${chapters.length} 章`
     : ''
 
   return (
-    <div className={`reader ${themeClass(settings.theme)}`}>
-      <div
-        className="reader-progress-bar"
-        style={{ width: `${scrollPct}%` }}
-        aria-hidden
-      />
+    <div className={`reader ${isComic ? 'reader--comic' : ''} ${themeClass(settings.theme)}`}>
+      {!isComic && (
+        <div
+          className="reader-progress-bar"
+          style={{ width: `${scrollPct}%` }}
+          aria-hidden
+        />
+      )}
 
       <header className={`reader-bar ${barsVisible ? '' : 'hidden'}`}>
         <Link
@@ -139,28 +248,31 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
           ← 返回
         </Link>
         <span className="reader-title" title={chapter?.name}>
-          {book?.name ?? '阅读'}
+          {isComic ? (chapter?.name ?? book?.name ?? '阅读') : (book?.name ?? '阅读')}
         </span>
         <button
           type="button"
           className={`reader-btn ${tocOpen ? 'active' : ''}`}
-          onClick={() => { setTocOpen(v => !v); setSettingsOpen(false) }}
+          onClick={() => openPanel('toc')}
         >
           目录
         </button>
-        <button
-          type="button"
-          className={`reader-btn ${settingsOpen ? 'active' : ''}`}
-          onClick={() => { setSettingsOpen(v => !v); setTocOpen(false) }}
-        >
-          设置
-        </button>
+        {!isComic && (
+          <button
+            type="button"
+            className={`reader-btn ${settingsOpen ? 'active' : ''}`}
+            onClick={() => openPanel('settings')}
+          >
+            设置
+          </button>
+        )}
       </header>
 
       <main
         ref={bodyRef}
-        className="reader-body reader-body--novel-paged"
-        onScroll={updateScrollProgress}
+        className={isComic ? 'reader-body reader-body--webtoon' : 'reader-body reader-body--novel-paged'}
+        onScroll={handleBodyScroll}
+        onClick={isComic ? handleComicClick : undefined}
       >
         {isLoading && (
           <div className="reader-loading">章节加载中…</div>
@@ -170,7 +282,40 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
             {error instanceof Error ? error.message : '加载失败'}
           </div>
         )}
-        {!isLoading && !error && chapter && (
+
+        {isComic && !isLoading && !error && chapter && (
+          <>
+            {images.length > 0
+              ? (
+                  <div className="reader-comic-scroll">
+                    {images.map((src, i) => (
+                      <img
+                        key={i}
+                        data-comic-page={i}
+                        src={proxyImage(src)}
+                        alt=""
+                        loading={i < 2 ? 'eager' : 'lazy'}
+                      />
+                    ))}
+                  </div>
+                )
+              : (
+                  <p className="reader-empty-chapter">本章暂无图片，请尝试下一话。</p>
+                )}
+            {images.length > 0 && (
+              <div
+                className={`reader-page-indicator reader-page-indicator--scroll ${barsVisible ? 'with-bars' : ''}`}
+                aria-live="polite"
+              >
+                {comicPageIndex + 1}
+                /
+                {images.length}
+              </div>
+            )}
+          </>
+        )}
+
+        {!isComic && !isLoading && !error && chapter && (
           <div
             className="reader-novel"
             style={{
@@ -198,15 +343,6 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
               : !content?.images?.length && (
                   <p className="reader-empty-chapter">本章暂无正文，请尝试下一章。</p>
                 )}
-
-            {content?.images?.map((src, i) => (
-              <img
-                key={i}
-                src={proxyImage(src)}
-                alt=""
-                className="reader-chapter-image"
-              />
-            ))}
 
             {content?.cached && (
               <p className="reader-cache-hint">已离线缓存</p>
@@ -244,24 +380,26 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
           </div>
         )}
 
-        <div className="reader-novel-tap-layer" aria-hidden>
-          <button type="button" title="上一章" onClick={goPrev} />
-          <button
-            type="button"
-            title="显示工具栏"
-            onClick={() => setBarsVisible(v => !v)}
-          />
-          <button type="button" title="下一章" onClick={goNext} />
-        </div>
+        {!isComic && (
+          <div className="reader-novel-tap-layer" aria-hidden>
+            <button type="button" title="上一章" onClick={goPrev} />
+            <button
+              type="button"
+              title="显示工具栏"
+              onClick={() => setBarsVisible(v => !v)}
+            />
+            <button type="button" title="下一章" onClick={goNext} />
+          </div>
+        )}
       </main>
 
       <footer className={`reader-bar reader-bar--footer ${barsVisible ? '' : 'hidden'}`}>
         <button type="button" className="reader-btn" disabled={!hasPrev} onClick={goPrev}>
-          上一章
+          {isComic ? '上一话' : '上一章'}
         </button>
         <span className="reader-progress">{progressLabel}</span>
         <button type="button" className="reader-btn primary" disabled={!hasNext} onClick={goNext}>
-          下一章
+          {isComic ? '下一话' : '下一章'}
         </button>
       </footer>
 
@@ -296,7 +434,7 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
         </aside>
       )}
 
-      {settingsOpen && (
+      {settingsOpen && !isComic && (
         <aside className="reader-drawer" role="dialog" aria-label="阅读设置">
           <div className="reader-drawer-header">
             <span>阅读设置</span>
