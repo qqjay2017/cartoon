@@ -11,6 +11,8 @@ import { buildTxt, txtFilename } from './txt-builder.js'
 import type { BookService } from '../engine/book-service.js'
 import type { BookSource, Chapter } from '../types/book-source.js'
 import type { BinaryFetcher } from '../utils/http.js'
+import { enrichChapterIds } from '../utils/site-ids.js'
+import { normalizeUrl } from '../cache/cache-keys.js'
 import { mapPool } from '../utils/async-pool.js'
 import { withRetry } from '../utils/retry.js'
 
@@ -32,6 +34,8 @@ export interface DownloadOptions {
   start?: number
   end?: number
   bookshelfId?: string
+  /** 书架已持久化的目录（含稳定 chapterId），导出 EPUB 时优先使用 */
+  chapters?: Chapter[]
   onProgress?: (progress: DownloadProgress) => void
 }
 
@@ -64,21 +68,13 @@ export class DownloadService {
   async download(options: DownloadOptions): Promise<DownloadResult> {
     const { source, bookUrl, format } = options
     const detail = await this.bookService.getBookDetail(source, bookUrl)
-
-    options.onProgress?.({ phase: 'toc', current: 0, total: 1, message: '获取目录' })
-    const toc = await this.bookService.getToc(source, detail.tocUrl ?? bookUrl)
-    if (!toc.length)
-      throw new Error('目录为空，无法下载')
-
-    const start = Math.max(0, options.start ?? 0)
-    const end = Math.min(toc.length - 1, options.end ?? toc.length - 1)
-    const chapters = toc.slice(start, end + 1)
+    const chapters = await this.resolveChapters(options, detail.tocUrl ?? bookUrl)
 
     if (format === 'epub' || format === 'txt') {
       if (source.bookSourceType !== 0)
         throw new Error('该书源不是小说类型，请使用 CBZ 或文件夹下载')
 
-      const novelChapters = await this.fetchNovelChapters(
+      const novelChapters = await this.ensureNovelChaptersCached(
         source,
         bookUrl,
         chapters,
@@ -150,7 +146,9 @@ export class DownloadService {
           const fetched = await this.fetchImage(detail.coverUrl)
           cover = fetched.data
           coverExt = fetched.ext
-          if (this.novelCache)
+          if (this.bookshelfCache && options.bookshelfId)
+            await this.bookshelfCache.cacheCover(options.bookshelfId, detail.coverUrl)
+          else if (this.novelCache)
             await this.novelCache.cacheCover(source.id, bookUrl, detail.coverUrl)
         }
         catch {
@@ -234,12 +232,13 @@ export class DownloadService {
     const bookDir = this.comicCache.getBookDir(source.id, bookUrl)
     const exportedFiles: string[] = []
     const partCount = Math.ceil(chapters.length / CBZ_CHAPTERS_PER_FILE)
+    const sliceStart = Math.max(0, options.start ?? 0)
 
     for (let partIndex = 0; partIndex < partCount; partIndex++) {
       const chunkStart = partIndex * CBZ_CHAPTERS_PER_FILE
       const chunk = chapters.slice(chunkStart, chunkStart + CBZ_CHAPTERS_PER_FILE)
-      const chapterStart = start + chunkStart + 1
-      const chapterEnd = start + chunkStart + chunk.length
+      const chapterStart = sliceStart + chunkStart + 1
+      const chapterEnd = sliceStart + chunkStart + chunk.length
 
       options.onProgress?.({
         phase: 'pack',
@@ -387,7 +386,28 @@ export class DownloadService {
     return comicChapters
   }
 
-  private async fetchNovelChapters(
+  private async resolveChapters(options: DownloadOptions, tocUrl: string): Promise<Chapter[]> {
+    let toc: Chapter[]
+    if (options.chapters?.length) {
+      options.onProgress?.({ phase: 'toc', current: 1, total: 1, message: '使用书架目录' })
+      toc = options.chapters
+    }
+    else {
+      options.onProgress?.({ phase: 'toc', current: 0, total: 1, message: '获取目录' })
+      toc = await this.bookService.getToc(options.source, tocUrl)
+    }
+
+    const normalized = toc.map(ch => ({ ...ch, url: normalizeUrl(ch.url) }))
+    const enriched = enrichChapterIds(normalized)
+    if (!enriched.length)
+      throw new Error('目录为空，无法下载')
+
+    const start = Math.max(0, options.start ?? 0)
+    const end = Math.min(enriched.length - 1, options.end ?? enriched.length - 1)
+    return enriched.slice(start, end + 1)
+  }
+
+  private async ensureNovelChaptersCached(
     source: BookSource & { id: string },
     bookUrl: string,
     chapters: Chapter[],
@@ -418,23 +438,29 @@ export class DownloadService {
       NOVEL_CHAPTER_CONCURRENCY,
       async ({ chapter, index }) => {
         await withRetry(async () => {
-          const chapterId = chapter.id ?? chapter.url
+          const chapterId = chapter.id!
 
           if (this.bookshelfCache && bookshelfId) {
-            if (await this.bookshelfCache.hasChapter(bookshelfId, chapterId)) {
-              const cached = await this.bookshelfCache.readChapterText(bookshelfId, chapterId)
-              if (cached?.text) {
-                results[index] = { title: chapter.name, html: cached.text }
-                report(chapter, true)
-                return
-              }
+            const hadCache = await this.bookshelfCache.hasChapter(bookshelfId, chapterId)
+            if (!hadCache) {
+              const cached = await this.bookshelfCache.cacheChapter(source, bookshelfId, chapter)
+              if (!cached.ok)
+                throw new Error(`章节无正文：${chapter.name}`)
             }
+
+            const text = (await this.bookshelfCache.readChapterText(bookshelfId, chapterId))?.text?.trim()
+            if (!text)
+              throw new Error(`章节无正文：${chapter.name}`)
+
+            results[index] = { title: chapter.name, html: text }
+            report(chapter, hadCache)
+            return
           }
 
           if (this.novelCache && await this.novelCache.hasChapter(source.id, bookUrl, chapter.url)) {
-            const cached = await this.novelCache.readChapterText(source.id, bookUrl, chapter.url)
-            if (cached?.text) {
-              results[index] = { title: chapter.name, html: cached.text }
+            const legacy = await this.novelCache.readChapterText(source.id, bookUrl, chapter.url)
+            if (legacy?.text) {
+              results[index] = { title: chapter.name, html: legacy.text }
               report(chapter, true)
               return
             }
@@ -448,9 +474,7 @@ export class DownloadService {
           if (!text.trim())
             throw new Error(`章节无正文：${chapter.name}`)
 
-          if (this.bookshelfCache && bookshelfId)
-            await this.bookshelfCache.writeChapterText(bookshelfId, chapterId, chapter, text)
-          else if (this.novelCache)
+          if (this.novelCache)
             await this.novelCache.writeChapterText(source.id, bookUrl, chapter, text, bookName)
 
           results[index] = { title: chapter.name, html: text }

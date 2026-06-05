@@ -565,14 +565,25 @@ app.post('/api/download/jobs', async (c) => {
   if (!source)
     return c.json({ error: 'source not found' }, 404)
 
+  let shelfChapters: Awaited<ReturnType<typeof getChapterList>> | undefined
+  let exportBookUrl = body.bookUrl!
+  if (body.bookshelfId) {
+    const ctx = await resolveBookshelfContext(body.bookshelfId)
+    if (ctx) {
+      shelfChapters = await getChapterList(ctx.db, body.bookshelfId)
+      exportBookUrl = ctx.item.bookUrl
+    }
+  }
+
   const jobId = app.downloadJobs.start(onProgress =>
     app.downloadService.download({
       source,
-      bookUrl: body.bookUrl!,
+      bookUrl: exportBookUrl,
       format: body.format!,
       start: body.start,
       end: body.end,
       bookshelfId: body.bookshelfId,
+      chapters: shelfChapters,
       onProgress,
     }),
   )

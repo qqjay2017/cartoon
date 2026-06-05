@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { BookService } from '../engine/book-service.js'
 import type { BookDetail, BookSource, Chapter } from '../types/book-source.js'
 import type { BinaryFetcher } from '../utils/http.js'
-import { enrichChapterIds } from '../utils/site-ids.js'
+import { chapterIdFromUrl, enrichChapterIds } from '../utils/site-ids.js'
 import { imageExtFromUrl } from '../download/cbz-builder.js'
 import type { BookCacheStatus, CacheJobProgress } from './comic-cache-service.js'
 import { mapPool } from '../utils/async-pool.js'
@@ -152,7 +152,7 @@ export class NovelBookshelfCache {
     chapter: Chapter,
     options?: { force?: boolean },
   ): Promise<{ ok: boolean, alreadyCached?: boolean, refreshed?: boolean, filePath?: string }> {
-    const chapterId = chapter.id ?? chapter.url
+    const chapterId = chapter.id ?? chapterIdFromUrl(chapter.url)
     const exists = await this.hasChapter(bookshelfId, chapterId)
     if (exists && !options?.force)
       return { ok: true, alreadyCached: true }

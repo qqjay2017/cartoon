@@ -131,7 +131,7 @@ export function BookDetailView({ bookshelfId }: Props) {
         format,
         setDownloadJob,
         undefined,
-        isComic ? undefined : bookshelfId,
+        bookshelfId,
       )
       if ('localExport' in result && result.localExport) {
         const files = result.exportedFiles.join('、')
