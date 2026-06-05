@@ -132,6 +132,11 @@ export class ComicCacheService {
     return `/api/cache/image?${params.toString()}`
   }
 
+  async listCachedChapterKeys(sourceId: string, bookUrl: string): Promise<string[]> {
+    const meta = await this.readBookMeta(sourceId, bookUrl)
+    return meta ? Object.keys(meta.chapters) : []
+  }
+
   async getStatus(
     sourceId: string,
     bookUrl: string,
@@ -340,13 +345,18 @@ export class ComicCacheService {
     return true
   }
 
-  startCacheAll(source: BookSource & { id: string }, bookUrl: string): { started: boolean, alreadyRunning?: boolean } {
+  startCacheAll(
+    source: BookSource & { id: string },
+    bookUrl: string,
+    chapters?: Chapter[],
+    bookName?: string,
+  ): { started: boolean, alreadyRunning?: boolean } {
     const key = this.bookKey(source.id, bookUrl)
     const existing = this.jobs.get(key)
     if (existing?.running)
       return { started: false, alreadyRunning: true }
 
-    void this.runCacheJob(source, bookUrl, 'all')
+    void this.runCacheJob(source, bookUrl, 'all', undefined, 100, chapters, bookName)
     return { started: true }
   }
 
@@ -378,26 +388,33 @@ export class ComicCacheService {
     mode: 'all' | 'prefetch',
     fromChapterUrl?: string,
     prefetchCount = 100,
+    presetChapters?: Chapter[],
+    presetBookName?: string,
   ): Promise<void> {
     const key = this.bookKey(source.id, bookUrl)
 
     try {
-      const detail = await this.options.bookService.getBookDetail(source, bookUrl)
-      const toc = await this.options.bookService.getToc(source, detail.tocUrl ?? bookUrl)
-      if (!toc.length)
+      let chapters: Chapter[] = presetChapters ?? []
+      let bookName = presetBookName
+
+      if (!chapters.length) {
+        const detail = await this.options.bookService.getBookDetail(source, bookUrl)
+        bookName = detail.name
+        chapters = await this.options.bookService.getToc(source, detail.tocUrl ?? bookUrl)
+      }
+
+      if (!chapters.length)
         return
 
-      let chapters: Chapter[] = toc
-
       if (mode === 'prefetch' && fromChapterUrl) {
-        const index = toc.findIndex(ch =>
+        const index = chapters.findIndex(ch =>
           normalizeUrl(ch.url) === normalizeUrl(fromChapterUrl) || ch.url === fromChapterUrl,
         )
         if (index < 0)
           return
         const start = index + 1
-        const end = Math.min(toc.length, start + prefetchCount)
-        chapters = toc.slice(start, end)
+        const end = Math.min(chapters.length, start + prefetchCount)
+        chapters = chapters.slice(start, end)
       }
 
       const pending: Chapter[] = []
@@ -406,10 +423,13 @@ export class ComicCacheService {
           pending.push(chapter)
       }
 
+      const alreadyCached = chapters.length - pending.length
+      const totalChapters = chapters.length
+
       this.jobs.set(key, {
         running: true,
-        current: 0,
-        total: pending.length,
+        current: alreadyCached,
+        total: totalChapters,
         message: pending.length ? '准备缓存' : '已全部缓存',
       })
 
@@ -417,7 +437,7 @@ export class ComicCacheService {
       const concurrency = chapterConcurrency(pending)
       await mapPool(pending, concurrency, async (chapter) => {
         try {
-          await this.cacheChapter(source, bookUrl, chapter, detail.name)
+          await this.cacheChapter(source, bookUrl, chapter, bookName)
         }
         catch (error) {
           console.error(`[comic-cache] ${chapter.name}:`, error)
@@ -425,16 +445,16 @@ export class ComicCacheService {
         completed++
         this.jobs.set(key, {
           running: true,
-          current: completed,
-          total: pending.length,
+          current: alreadyCached + completed,
+          total: totalChapters,
           message: chapter.name,
         })
       })
 
       this.jobs.set(key, {
         running: false,
-        current: pending.length,
-        total: pending.length,
+        current: totalChapters,
+        total: totalChapters,
         message: '完成',
       })
     }

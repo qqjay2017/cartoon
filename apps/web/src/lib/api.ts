@@ -53,6 +53,70 @@ export interface BookDetailResponse extends SearchBook {
   tocUrl?: string
 }
 
+export type DownloadFormat = 'epub' | 'txt' | 'cbz' | 'folder'
+
+export interface DownloadProgress {
+  phase: 'toc' | 'chapters' | 'pack'
+  current: number
+  total: number
+  message?: string
+  fromCache?: boolean
+  cachedChapters?: number
+}
+
+export interface DownloadJobSnapshot {
+  id: string
+  status: 'running' | 'done' | 'error'
+  progress?: DownloadProgress
+  error?: string
+  filename?: string
+  localExport?: boolean
+  exportDir?: string
+  exportedFiles?: string[]
+}
+
+export interface CacheJobProgress {
+  running: boolean
+  current: number
+  total: number
+  message?: string
+  error?: string
+}
+
+export interface BookCacheStatus {
+  cachedChapters: number
+  totalChapters: number
+  caching: boolean
+  progress?: CacheJobProgress
+}
+
+const DOWNLOAD_JOB_POLL_MIN_MS = 2500
+const DOWNLOAD_JOB_POLL_MAX_MS = 5000
+const DOWNLOAD_JOB_POLL_BACKOFF_MS = 500
+
+function downloadProgressKey(job: DownloadJobSnapshot): string {
+  if (!job.progress)
+    return job.status
+  const { phase, current, total, message } = job.progress
+  return `${phase}:${current}:${total}:${message ?? ''}`
+}
+
+async function fetchJsonWithRetry<T>(url: string, retries = 5): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await getJson<T>(url)
+    }
+    catch (error) {
+      lastError = error
+      if (attempt >= retries)
+        throw error instanceof Error ? error : new Error(String(error))
+      await new Promise(resolve => setTimeout(resolve, 1000 + attempt * 500))
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
 async function readApiError(response: Response): Promise<string> {
   const text = await response.text()
   try {
@@ -188,16 +252,88 @@ export const api = {
     })
   },
 
+  listCachedChapters(bookshelfId: string) {
+    const params = new URLSearchParams({ bookshelfId })
+    return getJson<{ cachedChapterIds: string[] }>(`/api/cache/chapters?${params}`)
+  },
+
+  cacheChapter(bookshelfId: string, chapterId: string) {
+    return mutateJson<{ ok: boolean, alreadyCached?: boolean }>('/api/cache/chapter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bookshelfId, chapterId }),
+    })
+  },
+
   getCacheStatus(bookshelfId: string, totalChapters?: number) {
     const params = new URLSearchParams({ bookshelfId })
     if (totalChapters !== undefined)
       params.set('totalChapters', String(totalChapters))
-    return getJson<{
-      cachedChapters: number
-      totalChapters: number
-      caching: boolean
-      progress?: { current: number, total: number, message?: string }
-    }>(`/api/cache/status?${params}`)
+    return getJson<BookCacheStatus>(`/api/cache/status?${params}`)
+  },
+
+  startDownloadJob(
+    sourceId: string,
+    bookUrl: string,
+    format: DownloadFormat,
+    range?: { start?: number, end?: number },
+  ) {
+    return mutateJson<{ jobId: string }>('/api/download/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId, bookUrl, format, ...range }),
+    })
+  },
+
+  getDownloadJob(jobId: string, retries = 5) {
+    return fetchJsonWithRetry<DownloadJobSnapshot>(`/api/download/jobs/${jobId}`, retries)
+  },
+
+  async downloadBookWithProgress(
+    sourceId: string,
+    bookUrl: string,
+    format: DownloadFormat,
+    onProgress: (job: DownloadJobSnapshot) => void,
+    range?: { start?: number, end?: number },
+  ) {
+    const { jobId } = await this.startDownloadJob(sourceId, bookUrl, format, range)
+    let lastSnapshot: DownloadJobSnapshot = {
+      id: jobId,
+      status: 'running',
+      progress: { phase: 'toc', current: 0, total: 1, message: '任务已创建' },
+    }
+
+    let pollDelayMs = DOWNLOAD_JOB_POLL_MIN_MS
+    let lastProgressKey = ''
+
+    while (true) {
+      const job = await this.getDownloadJob(jobId, 2)
+      lastSnapshot = job
+      onProgress(job)
+
+      if (job.status === 'done') {
+        if (job.localExport) {
+          return {
+            localExport: true as const,
+            exportDir: job.exportDir ?? '',
+            exportedFiles: job.exportedFiles ?? [],
+          }
+        }
+        return { filename: job.filename ?? `download.${format}` }
+      }
+
+      if (job.status === 'error')
+        throw new Error(job.error ?? '下载失败')
+
+      const progressKey = downloadProgressKey(job)
+      if (progressKey === lastProgressKey)
+        pollDelayMs = Math.min(pollDelayMs + DOWNLOAD_JOB_POLL_BACKOFF_MS, DOWNLOAD_JOB_POLL_MAX_MS)
+      else
+        pollDelayMs = DOWNLOAD_JOB_POLL_MIN_MS
+      lastProgressKey = progressKey
+
+      await new Promise(resolve => setTimeout(resolve, pollDelayMs))
+    }
   },
 
   reloadMeta(bookshelfId: string) {

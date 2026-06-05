@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @cartoon/web dev",
+    "dev": "pnpm --parallel --filter @cartoon/core --filter @cartoon/web dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "db:migrate": "pnpm --filter @cartoon/db db:migrate",

@@ -80,6 +80,19 @@ async function resolveBookshelfContext(bookshelfIdParam: string) {
   return { item, source, app, db }
 }
 
+async function presentBookshelfBookDetail(
+  ctx: NonNullable<Awaited<ReturnType<typeof resolveBookshelfContext>>>,
+  detail: BookDetail,
+): Promise<BookDetail> {
+  const coverUrl = await ctx.app.bookshelfCache.resolveCoverUrl(
+    ctx.item.id,
+    detail.coverUrl ?? ctx.item.coverUrl ?? undefined,
+  )
+  if (!coverUrl)
+    return detail
+  return { ...detail, coverUrl }
+}
+
 app.get('/api/health', async (c) => {
   const app = await getAppContext()
   return c.json({ ok: true, proxy: app.proxyEnv })
@@ -241,19 +254,19 @@ app.get('/api/bookshelf', async (c) => {
   const { db } = getDb()
   const items = await listBookshelf(db)
   const app = await getAppContext()
-  return c.json(items.map(item => ({
+  return c.json(await Promise.all(items.map(async (item) => ({
     id: item.id,
     sourceId: item.sourceId,
     sourceName: app.registry.get(item.sourceId)?.bookSourceName ?? item.sourceId,
     sourceType: app.registry.get(item.sourceId)?.bookSourceType ?? 0,
     name: item.name,
     author: item.author ?? undefined,
-    coverUrl: app.bookshelfCache.buildCoverApiUrl(item.id),
+    coverUrl: await app.bookshelfCache.resolveCoverUrl(item.id, item.coverUrl ?? undefined),
     bookUrl: item.bookUrl,
     lastReadChapterId: item.lastReadChapterId ?? undefined,
     lastReadChapterName: item.lastReadChapterName ?? undefined,
     addedAt: item.addedAt,
-  })))
+  }))))
 })
 
 app.post('/api/bookshelf', async (c) => {
@@ -287,8 +300,7 @@ app.post('/api/bookshelf', async (c) => {
   })
 
   const app = await getAppContext()
-  if (source.bookSourceType === 0)
-    void app.bookshelfCache.cacheCover(id, body.coverUrl)
+  void app.bookshelfCache.cacheCover(id, body.coverUrl)
 
   return c.json({ id, sourceId: source.id, bookId })
 })
@@ -344,22 +356,16 @@ app.get('/api/book', async (c) => {
       const meta = await getBookMeta(db, item.id)
       if (meta?.detail) {
         const detail = meta.detail as BookDetail
-        return c.json(
-          source.bookSourceType === 0
-            ? app.bookshelfCache.presentBookDetail(detail, item.id)
-            : detail,
-        )
+        return c.json(await presentBookshelfBookDetail(ctx, detail))
       }
     }
 
     try {
       const detail = await app.bookService.getBookDetail(source, item.bookUrl)
       await upsertBookMeta(db, item.id, detail)
-      if (source.bookSourceType === 0) {
-        await app.bookshelfCache.cacheCover(item.id, detail.coverUrl)
-        return c.json(app.bookshelfCache.presentBookDetail(detail, item.id))
-      }
-      return c.json(detail)
+      if (detail.coverUrl)
+        void app.bookshelfCache.cacheCover(item.id, detail.coverUrl)
+      return c.json(await presentBookshelfBookDetail(ctx, detail))
     }
     catch (error) {
       return c.json({ error: formatSourceFetchError(error, source.bookSourceName) }, 502)
@@ -544,7 +550,13 @@ function fixMgsearcherChapterUrl(chapterUrl: string, tocUrl?: string, leakedC?: 
 }
 
 app.post('/api/download/jobs', async (c) => {
-  const body = await c.req.json<{ sourceId?: string, bookUrl?: string, format?: DownloadFormat }>()
+  const body = await c.req.json<{
+    sourceId?: string
+    bookUrl?: string
+    format?: DownloadFormat
+    start?: number
+    end?: number
+  }>()
   if (!body.sourceId || !body.bookUrl || !body.format)
     return c.json({ error: 'missing fields' }, 400)
 
@@ -554,7 +566,14 @@ app.post('/api/download/jobs', async (c) => {
     return c.json({ error: 'source not found' }, 404)
 
   const jobId = app.downloadJobs.start(onProgress =>
-    app.downloadService.download({ source, bookUrl: body.bookUrl!, format: body.format!, onProgress }),
+    app.downloadService.download({
+      source,
+      bookUrl: body.bookUrl!,
+      format: body.format!,
+      start: body.start,
+      end: body.end,
+      onProgress,
+    }),
   )
   return c.json({ jobId })
 })
@@ -681,6 +700,72 @@ app.get('/api/cache/status', async (c) => {
   return c.json(await app.comicCache.getStatus(sourceId, bookUrl, totalChapters))
 })
 
+app.get('/api/cache/chapters', async (c) => {
+  const bookshelfIdParam = c.req.query('bookshelfId')
+  if (!bookshelfIdParam)
+    return c.json({ error: 'missing bookshelfId' }, 400)
+
+  const ctx = await resolveBookshelfContext(bookshelfIdParam)
+  if (!ctx)
+    return c.json({ error: 'not found' }, 404)
+
+  if (ctx.source.bookSourceType === 2) {
+    const cachedChapterIds = await ctx.app.comicCache.listCachedChapterKeys(
+      ctx.source.id,
+      ctx.item.bookUrl,
+    )
+    return c.json({ cachedChapterIds })
+  }
+
+  const cachedChapterIds = await listCachedChapterIds(ctx.db, bookshelfIdParam)
+  return c.json({ cachedChapterIds })
+})
+
+app.post('/api/cache/chapter', async (c) => {
+  const body = await c.req.json<{ bookshelfId?: string, chapterId?: string }>()
+  if (!body.bookshelfId || !body.chapterId)
+    return c.json({ error: 'missing bookshelfId or chapterId' }, 400)
+
+  const ctx = await resolveBookshelfContext(body.bookshelfId)
+  if (!ctx)
+    return c.json({ error: 'not found' }, 404)
+
+  const list = await getChapterList(ctx.db, ctx.item.id)
+  const chapter = list.find(ch => ch.id === body.chapterId)
+  if (!chapter)
+    return c.json({ error: 'chapter not found' }, 404)
+
+  try {
+    if (ctx.source.bookSourceType === 2) {
+      const alreadyCached = await ctx.app.comicCache.hasChapter(
+        ctx.source.id,
+        ctx.item.bookUrl,
+        chapter.url,
+      )
+      const ok = await ctx.app.comicCache.cacheChapter(
+        ctx.source,
+        ctx.item.bookUrl,
+        chapter,
+        ctx.item.name,
+      )
+      if (!ok)
+        return c.json({ error: '章节无图片或缓存失败' }, 502)
+      return c.json({ ok: true, alreadyCached })
+    }
+
+    if (ctx.source.bookSourceType === 0) {
+      const alreadyCached = await ctx.app.bookshelfCache.hasChapter(ctx.item.id, chapter.id!)
+      await ctx.app.bookshelfCache.cacheChapter(ctx.source, ctx.item.id, chapter)
+      return c.json({ ok: true, alreadyCached })
+    }
+
+    return c.json({ error: 'unsupported source type' }, 400)
+  }
+  catch (error) {
+    return c.json({ error: formatSourceFetchError(error, ctx.source.bookSourceName) }, 502)
+  }
+})
+
 app.post('/api/cache/all', async (c) => {
   const body = await c.req.json<{ bookshelfId?: string, sourceId?: string, bookUrl?: string }>()
   const app = await getAppContext()
@@ -692,8 +777,14 @@ app.post('/api/cache/all', async (c) => {
     const chapters = await getChapterList(ctx.db, ctx.item.id)
     if (!chapters.length)
       return c.json({ error: 'toc empty, open book first' }, 400)
-    if (ctx.source.bookSourceType === 2)
-      return c.json(ctx.app.comicCache.startCacheAll(ctx.source, ctx.item.bookUrl))
+    if (ctx.source.bookSourceType === 2) {
+      return c.json(ctx.app.comicCache.startCacheAll(
+        ctx.source,
+        ctx.item.bookUrl,
+        chapters,
+        ctx.item.name,
+      ))
+    }
 
     if (ctx.source.bookSourceType === 0) {
       const result = ctx.app.bookshelfCache.startCacheAll(
@@ -750,9 +841,10 @@ app.post('/api/cache/reload-meta', async (c) => {
     await upsertBookMeta(ctx.db, ctx.item.id, detail)
     await replaceChapterList(ctx.db, ctx.item.id, chapters)
     await setTocCachedAt(ctx.db, ctx.item.id, new Date())
-    await ctx.app.bookshelfCache.cacheCover(ctx.item.id, detail.coverUrl)
+    if (detail.coverUrl)
+      await ctx.app.bookshelfCache.cacheCover(ctx.item.id, detail.coverUrl)
     return c.json({
-      book: ctx.app.bookshelfCache.presentBookDetail(detail, ctx.item.id),
+      book: await presentBookshelfBookDetail(ctx, detail),
       chapters,
     })
   }
@@ -790,7 +882,14 @@ app.get('/api/cache/novel-cover', async (c) => {
     return c.json({ error: 'missing bookshelfId' }, 400)
 
   const app = await getAppContext()
-  const cover = await app.bookshelfCache.readCover(bookshelfIdParam)
+  let cover = await app.bookshelfCache.readCover(bookshelfIdParam)
+  if (!cover) {
+    const ctx = await resolveBookshelfContext(bookshelfIdParam)
+    if (ctx?.item.coverUrl) {
+      await app.bookshelfCache.cacheCover(bookshelfIdParam, ctx.item.coverUrl)
+      cover = await app.bookshelfCache.readCover(bookshelfIdParam)
+    }
+  }
   if (!cover)
     return c.json({ error: 'cover not found' }, 404)
 

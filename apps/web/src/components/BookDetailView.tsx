@@ -1,7 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
-import { api, proxyImage } from '~/lib/api'
+import {
+  api,
+  proxyImage,
+  type BookCacheStatus,
+  type DownloadJobSnapshot,
+} from '~/lib/api'
 import { Button } from '~/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 
@@ -13,13 +18,28 @@ export function BookDetailView({ bookshelfId }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [cacheMsg, setCacheMsg] = useState('')
+  const [downloading, setDownloading] = useState(false)
+  const [downloadMsg, setDownloadMsg] = useState('')
+  const [downloadError, setDownloadError] = useState('')
+  const [downloadJob, setDownloadJob] = useState<DownloadJobSnapshot | null>(null)
+  const [cachingChapterIndex, setCachingChapterIndex] = useState<number | null>(null)
 
-  const { data: detail, isLoading: loadingBook, error: bookError } = useQuery({
+  const {
+    data: detail,
+    isLoading: loadingBook,
+    error: bookError,
+  } = useQuery({
     queryKey: ['book', bookshelfId],
     queryFn: () => api.getBook(bookshelfId),
   })
 
-  const { data: tocData, isLoading: loadingToc, isError: tocError, error: tocErr, refetch: refetchToc } = useQuery({
+  const {
+    data: tocData,
+    isLoading: loadingToc,
+    isError: tocError,
+    error: tocErr,
+    refetch: refetchToc,
+  } = useQuery({
     queryKey: ['toc', bookshelfId],
     queryFn: () => api.getToc(bookshelfId),
     enabled: Boolean(detail),
@@ -32,8 +52,17 @@ export function BookDetailView({ bookshelfId }: Props) {
     queryKey: ['cache-status', bookshelfId, chapters.length],
     queryFn: () => api.getCacheStatus(bookshelfId, chapters.length),
     enabled: chapters.length > 0,
-    refetchInterval: q => (q.state.data?.caching ? 2000 : false),
+    refetchInterval: (q) => (q.state.data?.caching ? 2000 : false),
   })
+
+  const { data: cachedChaptersData, refetch: refetchCachedChapters } = useQuery({
+    queryKey: ['cached-chapters', bookshelfId],
+    queryFn: () => api.listCachedChapters(bookshelfId),
+    enabled: chapters.length > 0,
+    refetchInterval: cacheStatus?.caching ? 2000 : false,
+  })
+
+  const cachedChapterIds = new Set(cachedChaptersData?.cachedChapterIds ?? [])
 
   async function cacheAll() {
     setCacheMsg('')
@@ -41,8 +70,8 @@ export function BookDetailView({ bookshelfId }: Props) {
       const r = await api.cacheAll(bookshelfId)
       setCacheMsg(r.alreadyRunning ? '缓存任务已在运行' : '已开始缓存全部章节')
       await refetchCache()
-    }
-    catch (e) {
+      await refetchCachedChapters()
+    } catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '失败')
     }
   }
@@ -54,9 +83,58 @@ export function BookDetailView({ bookshelfId }: Props) {
       await queryClient.invalidateQueries({ queryKey: ['book', bookshelfId] })
       await queryClient.invalidateQueries({ queryKey: ['toc', bookshelfId] })
       setCacheMsg('元数据已刷新')
-    }
-    catch (e) {
+    } catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '失败')
+    }
+  }
+
+  async function cacheChapterAt(index: number) {
+    const chapter = chapters[index]
+    if (!chapter?.id || cachingChapterIndex !== null || cacheStatus?.caching)
+      return
+
+    setCachingChapterIndex(index)
+    setCacheMsg('')
+
+    try {
+      const result = await api.cacheChapter(bookshelfId, chapter.id)
+      const chapterName = chapter.name ?? `第 ${index + 1} 章`
+      setCacheMsg(result.alreadyCached ? `「${chapterName}」已在缓存中` : `「${chapterName}」已缓存`)
+      await refetchCache()
+      await refetchCachedChapters()
+    } catch (e) {
+      setCacheMsg(e instanceof Error ? e.message : '缓存失败')
+    } finally {
+      setCachingChapterIndex(null)
+    }
+  }
+
+  async function exportCbz() {
+    if (!detail || downloading)
+      return
+
+    setDownloading(true)
+    setDownloadError('')
+    setDownloadMsg('')
+    setDownloadJob(null)
+
+    try {
+      const result = await api.downloadBookWithProgress(
+        detail.sourceId,
+        detail.bookUrl,
+        'cbz',
+        setDownloadJob,
+      )
+      if ('localExport' in result && result.localExport) {
+        const files = result.exportedFiles.join('、')
+        setDownloadMsg(`已导出 ${result.exportedFiles.length} 个 CBZ 到 ${result.exportDir}：${files}`)
+      }
+    } catch (e) {
+      setDownloadError(e instanceof Error ? e.message : '导出失败')
+    } finally {
+      setDownloading(false)
+      setDownloadJob(null)
+      await refetchCache()
     }
   }
 
@@ -64,7 +142,42 @@ export function BookDetailView({ bookshelfId }: Props) {
     return <p className="text-center text-muted-foreground py-12">加载中…</p>
 
   if (bookError || !detail)
-    return <p className="text-center text-destructive py-12">{bookError instanceof Error ? bookError.message : '加载失败'}</p>
+    return (
+      <p className="text-center text-destructive py-12">
+        {bookError instanceof Error ? bookError.message : '加载失败'}
+      </p>
+    )
+
+  const isComic = detail.sourceType === 2
+
+  function formatCacheProgress(status: BookCacheStatus | undefined, chapterCount: number) {
+    if (!status)
+      return ''
+    const total = status.totalChapters || chapterCount
+    if (status.caching && status.progress) {
+      const { current, total: progressTotal, message } = status.progress
+      const suffix = message ? ` · ${message}` : ''
+      return `缓存中 ${current}/${progressTotal || total}${suffix}`
+    }
+    return `已缓存 ${status.cachedChapters}/${total} 章`
+  }
+
+  function formatDownloadProgress(job: DownloadJobSnapshot | null) {
+    const progress = job?.progress
+    if (!progress)
+      return '准备导出...'
+    if (progress.phase === 'toc')
+      return progress.message ?? '获取目录'
+    if (progress.phase === 'pack') {
+      if (progress.total > 1)
+        return `${progress.message ?? '正在打包'} (${progress.current}/${progress.total})`
+      return progress.message ?? '正在打包'
+    }
+    const cacheHint = progress.cachedChapters
+      ? ` · 已用缓存 ${progress.cachedChapters} 章`
+      : ''
+    return `${progress.current}/${progress.total} 章 · ${progress.message ?? ''}${cacheHint}`
+  }
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 px-4 py-6">
@@ -75,60 +188,153 @@ export function BookDetailView({ bookshelfId }: Props) {
       <Card>
         <CardHeader>
           <div className="flex gap-4 flex-wrap">
-            <div className="w-28 shrink-0 aspect-[3/4] rounded-md overflow-hidden bg-muted">
-              {detail.coverUrl
-                ? <img src={proxyImage(detail.coverUrl)} alt={detail.name} className="h-full w-full object-cover" />
-                : <span className="flex h-full items-center justify-center text-3xl text-muted-foreground">{detail.name.slice(0, 1)}</span>}
+            <div className="w-[140px] shrink-0 aspect-[3/4] rounded-md overflow-hidden bg-muted">
+              {detail.coverUrl ? (
+                <img
+                  src={proxyImage(detail.coverUrl)}
+                  alt={detail.name}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <span className="flex h-full items-center justify-center text-3xl text-muted-foreground">
+                  {detail.name.slice(0, 1)}
+                </span>
+              )}
             </div>
             <div className="flex-1 min-w-[200px]">
               <CardTitle>{detail.name}</CardTitle>
-              <p className="text-sm text-muted-foreground mt-1">{detail.author} · {detail.sourceName}</p>
-              <p className="text-xs font-mono text-muted-foreground mt-1">{bookshelfId}</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {detail.author} · {detail.sourceName}
+              </p>
+              <p className="text-xs font-mono text-muted-foreground mt-1">
+                {bookshelfId}
+              </p>
               {detail.intro && (
-                <p className="text-sm text-muted-foreground mt-3 line-clamp-4 whitespace-pre-wrap">{detail.intro}</p>
+                <p className="text-sm text-muted-foreground mt-3 line-clamp-4 whitespace-pre-wrap">
+                  {detail.intro}
+                </p>
               )}
               <div className="flex flex-wrap gap-2 mt-4">
-                <Button size="sm" onClick={() => void cacheAll()}>缓存全部</Button>
-                <Button size="sm" variant="secondary" onClick={() => void reloadMeta()}>刷新目录</Button>
+                <Button
+                  size="sm"
+                  onClick={() => void cacheAll()}
+                  disabled={cacheStatus?.caching}
+                >
+                  {cacheStatus?.caching ? '缓存进行中...' : '缓存全部'}
+                </Button>
+                {isComic && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void exportCbz()}
+                    disabled={downloading || !chapters.length}
+                  >
+                    {downloading ? '导出中...' : '导出 CBZ'}
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void reloadMeta()}
+                  disabled={isComic}
+                >
+                  刷新目录
+                </Button>
               </div>
               {cacheStatus && (
                 <p className="text-xs text-muted-foreground mt-2">
-                  已缓存 {cacheStatus.cachedChapters}/{cacheStatus.totalChapters || chapters.length} 章
+                  {formatCacheProgress(cacheStatus, chapters.length)}
                 </p>
               )}
-              {cacheMsg && <p className="text-xs text-muted-foreground mt-1">{cacheMsg}</p>}
+              {isComic && !downloading && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  漫画 CBZ 按每 100 章分卷，导出后保存在本地缓存目录。
+                </p>
+              )}
+              {downloading && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {formatDownloadProgress(downloadJob)}
+                </p>
+              )}
+              {downloadError && (
+                <p className="text-xs text-destructive mt-1">{downloadError}</p>
+              )}
+              {downloadMsg && (
+                <p className="text-xs text-muted-foreground mt-1">{downloadMsg}</p>
+              )}
+              {cacheMsg && (
+                <p className="text-xs text-muted-foreground mt-1">{cacheMsg}</p>
+              )}
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <h3 className="font-medium mb-2">目录 {loadingToc ? '(加载中)' : `(${chapters.length})`}</h3>
+          <h3 className="font-medium mb-2">
+            目录 {loadingToc ? '(加载中)' : `(${chapters.length})`}
+          </h3>
           {tocError && (
             <p className="text-sm text-destructive mb-2">
-              {tocErr instanceof Error ? tocErr.message : '目录加载失败'}
-              {' '}
-              <button type="button" className="underline" onClick={() => void refetchToc()}>重试</button>
+              {tocErr instanceof Error ? tocErr.message : '目录加载失败'}{' '}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => void refetchToc()}
+              >
+                重试
+              </button>
             </p>
           )}
           {!loadingToc && !tocError && chapters.length === 0 && (
             <p className="text-sm text-muted-foreground mb-2">
               暂无章节，
-              <button type="button" className="underline" onClick={() => void refetchToc()}>重新拉取</button>
+              <button
+                type="button"
+                className="underline"
+                onClick={() => void refetchToc()}
+              >
+                重新拉取
+              </button>
             </p>
           )}
           <div className="max-h-[420px] overflow-auto space-y-1">
             {chapters.map((ch, index) => (
-              <button
+              <div
                 key={ch.id ?? ch.url}
-                type="button"
-                className="w-full flex justify-between gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent"
-                onClick={() => navigate({
-                  to: '/read/$bookshelfId/$chapterIndex',
-                  params: { bookshelfId, chapterIndex: String(index) },
-                })}
+                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
               >
-                <span className="truncate">{ch.name}</span>
-                {ch.id && <span className="text-xs text-muted-foreground shrink-0">{ch.id}</span>}
-              </button>
+                <button
+                  type="button"
+                  className="flex-1 min-w-0 text-left"
+                  onClick={() =>
+                    navigate({
+                      to: '/read/$bookshelfId/$chapterIndex',
+                      params: { bookshelfId, chapterIndex: String(index) },
+                    })
+                  }
+                >
+                  <span className="truncate block">{ch.name}</span>
+                </button>
+                {isComic && ch.id && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 h-7 px-2"
+                    disabled={
+                      cacheStatus?.caching
+                      || cachingChapterIndex !== null
+                      || cachedChapterIds.has(ch.id)
+                    }
+                    onClick={() => void cacheChapterAt(index)}
+                  >
+                    {cachingChapterIndex === index
+                      ? '缓存中'
+                      : cachedChapterIds.has(ch.id)
+                        ? '已缓存'
+                        : '缓存'}
+                  </Button>
+                )}
+              </div>
             ))}
           </div>
         </CardContent>

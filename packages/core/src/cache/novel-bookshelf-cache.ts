@@ -133,11 +133,17 @@ export class NovelBookshelfCache {
     await writeFile(this.coverFilePath(bookshelfId, ext), result.data)
   }
 
-  presentBookDetail(detail: BookDetail, bookshelfId: string): BookDetail {
-    return {
-      ...detail,
-      coverUrl: this.buildCoverApiUrl(bookshelfId),
-    }
+  async resolveCoverUrl(bookshelfId: string, fallback?: string): Promise<string | undefined> {
+    if (await this.hasCover(bookshelfId))
+      return this.buildCoverApiUrl(bookshelfId)
+    return fallback
+  }
+
+  async presentBookDetail(detail: BookDetail, bookshelfId: string): Promise<BookDetail> {
+    const coverUrl = await this.resolveCoverUrl(bookshelfId, detail.coverUrl)
+    if (!coverUrl)
+      return detail
+    return { ...detail, coverUrl }
   }
 
   async cacheChapter(

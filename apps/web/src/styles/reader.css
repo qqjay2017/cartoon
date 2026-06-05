@@ -32,7 +32,7 @@
 .reader-chapter-image {
   display: block;
   max-width: 100%;
-  margin: 0 auto 12px;
+  margin: 0 auto;
 }
 
 .reader-chapter-actions {
