@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ComicCacheService } from '../cache/comic-cache-service.js'
+import type { NovelBookshelfCache } from '../cache/novel-bookshelf-cache.js'
 import type { NovelCacheService } from '../cache/novel-cache-service.js'
 import { buildCbzFromCache } from './cbz-from-cache.js'
 import { CBZ_CHAPTERS_PER_FILE, cbzPartFilename, imageExtFromUrl } from './cbz-builder.js'
@@ -30,6 +31,7 @@ export interface DownloadOptions {
   format: DownloadFormat
   start?: number
   end?: number
+  bookshelfId?: string
   onProgress?: (progress: DownloadProgress) => void
 }
 
@@ -56,6 +58,7 @@ export class DownloadService {
     private binaryFetcher: BinaryFetcher,
     private comicCache?: ComicCacheService,
     private novelCache?: NovelCacheService,
+    private bookshelfCache?: NovelBookshelfCache,
   ) {}
 
   async download(options: DownloadOptions): Promise<DownloadResult> {
@@ -81,6 +84,7 @@ export class DownloadService {
         chapters,
         detail.name,
         options.onProgress,
+        options.bookshelfId,
       )
 
       if (format === 'txt') {
@@ -92,6 +96,18 @@ export class DownloadService {
           chapters: novelChapters.map(ch => ({ title: ch.title, text: ch.html })),
         })
         const filename = txtFilename(detail.name)
+        const bookshelfExportDir = this.bookshelfExportDir(options.bookshelfId)
+        if (bookshelfExportDir) {
+          await mkdir(bookshelfExportDir, { recursive: true })
+          await writeFile(join(bookshelfExportDir, filename), data)
+          return {
+            localExport: true,
+            exportDir: bookshelfExportDir,
+            exportedFiles: [filename],
+            filename,
+            mimeType: 'text/plain; charset=utf-8',
+          }
+        }
         if (this.novelCache) {
           const bookDir = this.novelCache.getBookDir(source.id, bookUrl)
           await mkdir(bookDir, { recursive: true })
@@ -115,6 +131,13 @@ export class DownloadService {
 
       let cover: Uint8Array | undefined
       let coverExt = 'jpg'
+      if (this.bookshelfCache && options.bookshelfId) {
+        const cachedCover = await this.bookshelfCache.readCover(options.bookshelfId)
+        if (cachedCover) {
+          cover = cachedCover.data
+          coverExt = cachedCover.ext
+        }
+      }
       if (this.novelCache) {
         const cachedCover = await this.novelCache.readCover(source.id, bookUrl)
         if (cachedCover) {
@@ -145,6 +168,18 @@ export class DownloadService {
       })
 
       const filename = epubFilename(detail.name)
+      const bookshelfExportDir = this.bookshelfExportDir(options.bookshelfId)
+      if (bookshelfExportDir) {
+        await mkdir(bookshelfExportDir, { recursive: true })
+        await writeFile(join(bookshelfExportDir, filename), data)
+        return {
+          localExport: true,
+          exportDir: bookshelfExportDir,
+          exportedFiles: [filename],
+          filename,
+          mimeType: 'application/epub+zip',
+        }
+      }
       if (this.novelCache) {
         const bookDir = this.novelCache.getBookDir(source.id, bookUrl)
         await mkdir(bookDir, { recursive: true })
@@ -358,6 +393,7 @@ export class DownloadService {
     chapters: Chapter[],
     bookName: string,
     onProgress?: DownloadOptions['onProgress'],
+    bookshelfId?: string,
   ) {
     const results: Array<{ title: string, html: string } | null> = new Array(chapters.length).fill(null)
     let completed = 0
@@ -382,6 +418,19 @@ export class DownloadService {
       NOVEL_CHAPTER_CONCURRENCY,
       async ({ chapter, index }) => {
         await withRetry(async () => {
+          const chapterId = chapter.id ?? chapter.url
+
+          if (this.bookshelfCache && bookshelfId) {
+            if (await this.bookshelfCache.hasChapter(bookshelfId, chapterId)) {
+              const cached = await this.bookshelfCache.readChapterText(bookshelfId, chapterId)
+              if (cached?.text) {
+                results[index] = { title: chapter.name, html: cached.text }
+                report(chapter, true)
+                return
+              }
+            }
+          }
+
           if (this.novelCache && await this.novelCache.hasChapter(source.id, bookUrl, chapter.url)) {
             const cached = await this.novelCache.readChapterText(source.id, bookUrl, chapter.url)
             if (cached?.text) {
@@ -399,7 +448,9 @@ export class DownloadService {
           if (!text.trim())
             throw new Error(`章节无正文：${chapter.name}`)
 
-          if (this.novelCache)
+          if (this.bookshelfCache && bookshelfId)
+            await this.bookshelfCache.writeChapterText(bookshelfId, chapterId, chapter, text)
+          else if (this.novelCache)
             await this.novelCache.writeChapterText(source.id, bookUrl, chapter, text, bookName)
 
           results[index] = { title: chapter.name, html: text }
@@ -413,6 +464,13 @@ export class DownloadService {
       throw new Error('未获取到小说章节内容')
 
     return novelChapters
+  }
+
+  private bookshelfExportDir(bookshelfId?: string): string | undefined {
+    if (!this.bookshelfCache || !bookshelfId)
+      return undefined
+    const safeId = bookshelfId.replace(/:/g, '_')
+    return join(this.bookshelfCache.getContentRoot(), safeId)
   }
 
   private async fetchImage(url: string): Promise<{ data: Uint8Array, ext: string }> {

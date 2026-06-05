@@ -318,9 +318,14 @@ export class ComicCacheService {
     bookUrl: string,
     chapter: Chapter,
     bookName?: string,
+    options?: { force?: boolean },
   ): Promise<boolean> {
-    if (await this.hasChapter(source.id, bookUrl, chapter.url))
+    const exists = await this.hasChapter(source.id, bookUrl, chapter.url)
+    if (exists && !options?.force)
       return true
+
+    if (exists && options?.force)
+      await rm(this.getChapterDir(source.id, bookUrl, chapter.url), { recursive: true, force: true })
 
     const content = await withRetry(
       () => this.options.bookService.getChapterContent(source, chapter.url),

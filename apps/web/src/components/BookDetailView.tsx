@@ -93,13 +93,19 @@ export function BookDetailView({ bookshelfId }: Props) {
     if (!chapter?.id || cachingChapterIndex !== null || cacheStatus?.caching)
       return
 
+    const force = cachedChapterIds.has(chapter.id)
     setCachingChapterIndex(index)
     setCacheMsg('')
 
     try {
-      const result = await api.cacheChapter(bookshelfId, chapter.id)
+      const result = await api.cacheChapter(bookshelfId, chapter.id, force)
       const chapterName = chapter.name ?? `第 ${index + 1} 章`
-      setCacheMsg(result.alreadyCached ? `「${chapterName}」已在缓存中` : `「${chapterName}」已缓存`)
+      if (result.refreshed)
+        setCacheMsg(`「${chapterName}」已重新缓存`)
+      else if (result.alreadyCached)
+        setCacheMsg(`「${chapterName}」已在缓存中`)
+      else
+        setCacheMsg(`「${chapterName}」已缓存`)
       await refetchCache()
       await refetchCachedChapters()
     } catch (e) {
@@ -109,7 +115,7 @@ export function BookDetailView({ bookshelfId }: Props) {
     }
   }
 
-  async function exportCbz() {
+  async function exportBook(format: 'epub' | 'cbz') {
     if (!detail || downloading)
       return
 
@@ -122,12 +128,14 @@ export function BookDetailView({ bookshelfId }: Props) {
       const result = await api.downloadBookWithProgress(
         detail.sourceId,
         detail.bookUrl,
-        'cbz',
+        format,
         setDownloadJob,
+        undefined,
+        isComic ? undefined : bookshelfId,
       )
       if ('localExport' in result && result.localExport) {
         const files = result.exportedFiles.join('、')
-        setDownloadMsg(`已导出 ${result.exportedFiles.length} 个 CBZ 到 ${result.exportDir}：${files}`)
+        setDownloadMsg(`已导出 ${result.exportedFiles.length} 个文件到 ${result.exportDir}：${files}`)
       }
     } catch (e) {
       setDownloadError(e instanceof Error ? e.message : '导出失败')
@@ -222,14 +230,23 @@ export function BookDetailView({ bookshelfId }: Props) {
                 >
                   {cacheStatus?.caching ? '缓存进行中...' : '缓存全部'}
                 </Button>
-                {isComic && (
+                {isComic ? (
                   <Button
                     size="sm"
                     variant="secondary"
-                    onClick={() => void exportCbz()}
+                    onClick={() => void exportBook('cbz')}
                     disabled={downloading || !chapters.length}
                   >
                     {downloading ? '导出中...' : '导出 CBZ'}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void exportBook('epub')}
+                    disabled={downloading || !chapters.length}
+                  >
+                    {downloading ? '导出中...' : '导出 EPUB'}
                   </Button>
                 )}
                 <Button
@@ -249,6 +266,11 @@ export function BookDetailView({ bookshelfId }: Props) {
               {isComic && !downloading && (
                 <p className="text-xs text-muted-foreground mt-1">
                   漫画 CBZ 按每 100 章分卷，导出后保存在本地缓存目录。
+                </p>
+              )}
+              {!isComic && !downloading && cacheStatus && cacheStatus.cachedChapters > 0 && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  导出 EPUB 时将优先读取本地缓存（已缓存 {cacheStatus.cachedChapters}/{chapters.length || cacheStatus.totalChapters} 章）。
                 </p>
               )}
               {downloading && (
@@ -314,7 +336,7 @@ export function BookDetailView({ bookshelfId }: Props) {
                 >
                   <span className="truncate block">{ch.name}</span>
                 </button>
-                {isComic && ch.id && (
+                {ch.id && (
                   <Button
                     type="button"
                     size="sm"
@@ -322,15 +344,14 @@ export function BookDetailView({ bookshelfId }: Props) {
                     className="shrink-0 h-7 px-2"
                     disabled={
                       cacheStatus?.caching
-                      || cachingChapterIndex !== null
-                      || cachedChapterIds.has(ch.id)
+                      || (cachingChapterIndex !== null && cachingChapterIndex !== index)
                     }
                     onClick={() => void cacheChapterAt(index)}
                   >
                     {cachingChapterIndex === index
                       ? '缓存中'
                       : cachedChapterIds.has(ch.id)
-                        ? '已缓存'
+                        ? '重新缓存'
                         : '缓存'}
                   </Button>
                 )}

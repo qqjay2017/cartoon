@@ -150,18 +150,20 @@ export class NovelBookshelfCache {
     source: BookSource & { id: string },
     bookshelfId: string,
     chapter: Chapter,
-  ): Promise<boolean> {
+    options?: { force?: boolean },
+  ): Promise<{ ok: boolean, alreadyCached?: boolean, refreshed?: boolean, filePath?: string }> {
     const chapterId = chapter.id ?? chapter.url
-    if (await this.hasChapter(bookshelfId, chapterId))
-      return true
+    const exists = await this.hasChapter(bookshelfId, chapterId)
+    if (exists && !options?.force)
+      return { ok: true, alreadyCached: true }
 
     const content = await this.options.bookService.getChapterContent(source, chapter.url)
     const text = content.text?.trim()
     if (!text)
-      return false
+      return { ok: false }
 
-    await this.writeChapterText(bookshelfId, chapterId, chapter, text)
-    return true
+    const filePath = await this.writeChapterText(bookshelfId, chapterId, chapter, text)
+    return { ok: true, refreshed: exists, filePath }
   }
 
   getStatus(bookshelfId: string, totalChapters = 0, cachedChapters = 0): BookCacheStatus {
@@ -183,12 +185,13 @@ export class NovelBookshelfCache {
     bookUrl: string,
     chapters: Chapter[],
     bookName?: string,
+    onChapterCached?: (chapterId: string, filePath: string) => Promise<void>,
   ): { started: boolean, alreadyRunning?: boolean } {
     const existing = this.jobs.get(bookshelfId)
     if (existing?.running)
       return { started: false, alreadyRunning: true }
 
-    void this.runCacheJob(source, bookshelfId, bookUrl, chapters, bookName)
+    void this.runCacheJob(source, bookshelfId, bookUrl, chapters, bookName, onChapterCached)
     return { started: true }
   }
 
@@ -210,50 +213,74 @@ export class NovelBookshelfCache {
     return enrichChapterIds(chapters)
   }
 
+  async listCachedChapterIds(bookshelfId: string, chapters: Chapter[]): Promise<string[]> {
+    const ids: string[] = []
+    for (const ch of chapters) {
+      const id = ch.id
+      if (id && await this.hasChapter(bookshelfId, id))
+        ids.push(id)
+    }
+    return ids
+  }
+
+  async countCachedChapters(bookshelfId: string, chapters: Chapter[]): Promise<number> {
+    let count = 0
+    for (const ch of chapters) {
+      const id = ch.id
+      if (id && await this.hasChapter(bookshelfId, id))
+        count++
+    }
+    return count
+  }
+
   private async runCacheJob(
     source: BookSource & { id: string },
     bookshelfId: string,
     _bookUrl: string,
     toc: Chapter[],
     _bookName?: string,
+    onChapterCached?: (chapterId: string, filePath: string) => Promise<void>,
   ): Promise<void> {
     try {
       const enriched = this.enrichToc(toc)
+      const withIds = enriched.filter(ch => ch.id)
       const toCache: Chapter[] = []
-      for (const ch of enriched) {
-        const id = ch.id
-        if (!id)
-          continue
-        if (!(await this.hasChapter(bookshelfId, id)))
+      for (const ch of withIds) {
+        if (!(await this.hasChapter(bookshelfId, ch.id!)))
           toCache.push(ch)
       }
 
+      const alreadyCached = withIds.length - toCache.length
+      const totalChapters = withIds.length
+
       this.jobs.set(bookshelfId, {
         running: true,
-        current: 0,
-        total: toCache.length,
+        current: alreadyCached,
+        total: totalChapters,
         message: toCache.length ? '准备缓存' : '已全部缓存',
       })
 
       let completed = 0
       await mapPool(toCache, NOVEL_CACHE_CONCURRENCY, async (chapter) => {
-        await withRetry(
+        const result = await withRetry(
           () => this.cacheChapter(source, bookshelfId, chapter),
           { retries: 2, delayMs: 2000 },
         )
+        if (result.ok && result.filePath && chapter.id && onChapterCached)
+          await onChapterCached(chapter.id, result.filePath)
         completed++
         this.jobs.set(bookshelfId, {
           running: true,
-          current: completed,
-          total: toCache.length,
+          current: alreadyCached + completed,
+          total: totalChapters,
           message: chapter.name,
         })
       })
 
       this.jobs.set(bookshelfId, {
         running: false,
-        current: toCache.length,
-        total: toCache.length,
+        current: totalChapters,
+        total: totalChapters,
         message: '完成',
       })
     }

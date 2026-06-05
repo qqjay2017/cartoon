@@ -17,7 +17,6 @@ import {
   getSourceById,
   getSourceCookies,
   listBookshelf,
-  listCachedChapterIds,
   createSourceRecord,
   getSourceRecord,
   isSourceIdTaken,
@@ -553,6 +552,7 @@ app.post('/api/download/jobs', async (c) => {
   const body = await c.req.json<{
     sourceId?: string
     bookUrl?: string
+    bookshelfId?: string
     format?: DownloadFormat
     start?: number
     end?: number
@@ -572,6 +572,7 @@ app.post('/api/download/jobs', async (c) => {
       format: body.format!,
       start: body.start,
       end: body.end,
+      bookshelfId: body.bookshelfId,
       onProgress,
     }),
   )
@@ -684,7 +685,8 @@ app.get('/api/cache/status', async (c) => {
       return c.json({ error: 'not found' }, 404)
     if (ctx.source.bookSourceType === 2)
       return c.json(await ctx.app.comicCache.getStatus(ctx.source.id, ctx.item.bookUrl, totalChapters))
-    const cached = (await listCachedChapterIds(ctx.db, bookshelfIdParam)).length
+    const chapters = await getChapterList(ctx.db, bookshelfIdParam)
+    const cached = await ctx.app.bookshelfCache.countCachedChapters(bookshelfIdParam, chapters)
     return c.json(ctx.app.bookshelfCache.getStatus(bookshelfIdParam, totalChapters, cached))
   }
 
@@ -717,14 +719,19 @@ app.get('/api/cache/chapters', async (c) => {
     return c.json({ cachedChapterIds })
   }
 
-  const cachedChapterIds = await listCachedChapterIds(ctx.db, bookshelfIdParam)
+  const cachedChapterIds = await ctx.app.bookshelfCache.listCachedChapterIds(
+    bookshelfIdParam,
+    await getChapterList(ctx.db, bookshelfIdParam),
+  )
   return c.json({ cachedChapterIds })
 })
 
 app.post('/api/cache/chapter', async (c) => {
-  const body = await c.req.json<{ bookshelfId?: string, chapterId?: string }>()
+  const body = await c.req.json<{ bookshelfId?: string, chapterId?: string, force?: boolean }>()
   if (!body.bookshelfId || !body.chapterId)
     return c.json({ error: 'missing bookshelfId or chapterId' }, 400)
+
+  const force = Boolean(body.force)
 
   const ctx = await resolveBookshelfContext(body.bookshelfId)
   if (!ctx)
@@ -747,16 +754,26 @@ app.post('/api/cache/chapter', async (c) => {
         ctx.item.bookUrl,
         chapter,
         ctx.item.name,
+        { force },
       )
       if (!ok)
         return c.json({ error: '章节无图片或缓存失败' }, 502)
-      return c.json({ ok: true, alreadyCached })
+      return c.json({ ok: true, alreadyCached: alreadyCached && !force, refreshed: alreadyCached && force })
     }
 
     if (ctx.source.bookSourceType === 0) {
-      const alreadyCached = await ctx.app.bookshelfCache.hasChapter(ctx.item.id, chapter.id!)
-      await ctx.app.bookshelfCache.cacheChapter(ctx.source, ctx.item.id, chapter)
-      return c.json({ ok: true, alreadyCached })
+      const chapterId = chapter.id!
+      const alreadyCached = await ctx.app.bookshelfCache.hasChapter(ctx.item.id, chapterId)
+      const result = await ctx.app.bookshelfCache.cacheChapter(ctx.source, ctx.item.id, chapter, { force })
+      if (!result.ok)
+        return c.json({ error: '章节无正文或缓存失败' }, 502)
+      if (result.filePath)
+        await upsertChapterContentRecord(ctx.db, ctx.item.id, chapterId, result.filePath)
+      return c.json({
+        ok: true,
+        alreadyCached: alreadyCached && !force,
+        refreshed: result.refreshed || (alreadyCached && force),
+      })
     }
 
     return c.json({ error: 'unsupported source type' }, 400)
@@ -793,6 +810,9 @@ app.post('/api/cache/all', async (c) => {
         ctx.item.bookUrl,
         chapters,
         ctx.item.name,
+        async (chapterId, filePath) => {
+          await upsertChapterContentRecord(ctx.db, ctx.item.id, chapterId, filePath)
+        },
       )
       return c.json(result)
     }

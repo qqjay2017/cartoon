@@ -257,11 +257,11 @@ export const api = {
     return getJson<{ cachedChapterIds: string[] }>(`/api/cache/chapters?${params}`)
   },
 
-  cacheChapter(bookshelfId: string, chapterId: string) {
-    return mutateJson<{ ok: boolean, alreadyCached?: boolean }>('/api/cache/chapter', {
+  cacheChapter(bookshelfId: string, chapterId: string, force = false) {
+    return mutateJson<{ ok: boolean, alreadyCached?: boolean, refreshed?: boolean }>('/api/cache/chapter', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bookshelfId, chapterId }),
+      body: JSON.stringify({ bookshelfId, chapterId, force }),
     })
   },
 
@@ -277,11 +277,12 @@ export const api = {
     bookUrl: string,
     format: DownloadFormat,
     range?: { start?: number, end?: number },
+    bookshelfId?: string,
   ) {
     return mutateJson<{ jobId: string }>('/api/download/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourceId, bookUrl, format, ...range }),
+      body: JSON.stringify({ sourceId, bookUrl, format, bookshelfId, ...range }),
     })
   },
 
@@ -295,8 +296,9 @@ export const api = {
     format: DownloadFormat,
     onProgress: (job: DownloadJobSnapshot) => void,
     range?: { start?: number, end?: number },
+    bookshelfId?: string,
   ) {
-    const { jobId } = await this.startDownloadJob(sourceId, bookUrl, format, range)
+    const { jobId } = await this.startDownloadJob(sourceId, bookUrl, format, range, bookshelfId)
     let lastSnapshot: DownloadJobSnapshot = {
       id: jobId,
       status: 'running',

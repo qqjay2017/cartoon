@@ -151,7 +151,7 @@ export async function getAppContext(): Promise<AppContext> {
   const bookshelfCache = new NovelBookshelfCache({ projectRoot: rootDir, bookService, binaryFetcher })
   await bookshelfCache.init()
 
-  const downloadService = new DownloadService(bookService, binaryFetcher, comicCache, undefined)
+  const downloadService = new DownloadService(bookService, binaryFetcher, comicCache, undefined, bookshelfCache)
   const downloadJobs = new DownloadJobManager(join(rootDir, 'cache', 'downloads'))
   await downloadJobs.init()
 
