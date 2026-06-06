@@ -1,10 +1,13 @@
 import { createReadStream } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { stat } from 'node:fs/promises'
 import type { Readable } from 'node:stream'
 import {
   bookIdFromUrl,
   bookshelfId,
   chapterIdFromUrl,
+  buildCbzExport,
   type BookDetail,
   type BookSource,
   type DownloadFormat,
@@ -32,10 +35,19 @@ import {
   upsertChapterContentRecord,
   updateBookshelfProgress,
   getDb,
+  listDownloadTasks,
+  upsertDownloadTasks,
+  updateDownloadTaskStatus,
+  pauseActiveTasks,
+  resumePausedTasks,
+  retryFailedTasks,
+  markRunningTasksAsPending,
+  clearDownloadTasks,
+  type DownloadTaskStatus,
 } from '@cartoon/db'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { createReadStream as ctxReadStream, getAppContext, reloadRegistry, persistSourceCookies } from './context.js'
+import { createReadStream as ctxReadStream, getAppContext, reloadRegistry, persistSourceCookies, rootDir } from './context.js'
 
 const app = new Hono()
 
@@ -805,16 +817,59 @@ app.post('/api/cache/all', async (c) => {
     const chapters = await getChapterList(ctx.db, ctx.item.id)
     if (!chapters.length)
       return c.json({ error: 'toc empty, open book first' }, 400)
+
+    const bookshelfIdParam = body.bookshelfId
+
     if (ctx.source.bookSourceType === 2) {
-      return c.json(ctx.app.comicCache.startCacheAll(
+      // Comic: create per-chapter download tasks
+      const cachedKeys = new Set(await ctx.app.comicCache.listCachedChapterKeys(ctx.source.id, ctx.item.bookUrl))
+      const tasks = chapters.map((ch, i) => {
+        const key = ctx.app.comicCache.chapterKey(ch.url)
+        const status: DownloadTaskStatus = cachedKeys.has(key) ? 'completed' : 'pending'
+        return {
+          id: `${bookshelfIdParam}::${ch.id ?? ch.url}`,
+          bookshelfId: bookshelfIdParam,
+          chapterId: ch.id ?? ch.url,
+          chapterName: ch.name,
+          chapterUrl: ch.url,
+          sortIndex: i,
+          status,
+        }
+      })
+      await upsertDownloadTasks(ctx.db, tasks)
+
+      const onChapterDone = async (chapter: { id?: string, url: string }, ok: boolean, error?: string) => {
+        const taskId = `${bookshelfIdParam}::${chapter.id ?? chapter.url}`
+        await updateDownloadTaskStatus(ctx.db, taskId, ok ? 'completed' : 'failed', error)
+      }
+
+      const result = ctx.app.comicCache.startCacheAll(
         ctx.source,
         ctx.item.bookUrl,
         chapters,
         ctx.item.name,
-      ))
+        onChapterDone,
+      )
+      return c.json(result)
     }
 
     if (ctx.source.bookSourceType === 0) {
+      // Novel: create per-chapter download tasks
+      const cachedIds = new Set(await ctx.app.bookshelfCache.listCachedChapterIds(bookshelfIdParam, chapters))
+      const tasks = chapters.map((ch, i) => {
+        const status: DownloadTaskStatus = ch.id && cachedIds.has(ch.id) ? 'completed' : 'pending'
+        return {
+          id: `${bookshelfIdParam}::${ch.id ?? ch.url}`,
+          bookshelfId: bookshelfIdParam,
+          chapterId: ch.id ?? ch.url,
+          chapterName: ch.name,
+          chapterUrl: ch.url,
+          sortIndex: i,
+          status,
+        }
+      })
+      await upsertDownloadTasks(ctx.db, tasks)
+
       const result = ctx.app.bookshelfCache.startCacheAll(
         ctx.source,
         ctx.item.id,
@@ -823,6 +878,10 @@ app.post('/api/cache/all', async (c) => {
         ctx.item.name,
         async (chapterId, filePath) => {
           await upsertChapterContentRecord(ctx.db, ctx.item.id, chapterId, filePath)
+        },
+        async (chapter, ok, error) => {
+          const taskId = `${bookshelfIdParam}::${chapter.id ?? chapter.url}`
+          await updateDownloadTaskStatus(ctx.db, taskId, ok ? 'completed' : 'failed', error)
         },
       )
       return c.json(result)
@@ -896,6 +955,7 @@ app.delete('/api/cache', async (c) => {
       await app.comicCache.clearBook(ctx.source.id, ctx.item.bookUrl)
     else
       await app.bookshelfCache.clearBook(bookshelfIdParam)
+    await clearDownloadTasks(ctx.db, bookshelfIdParam)
     return c.json({ ok: true })
   }
 
@@ -957,6 +1017,220 @@ app.get('/api/proxy', async (c) => {
   const response = await fetch(url, { headers: { Referer: new URL(url).origin, 'User-Agent': defaultHeaders['User-Agent'] } })
   const buffer = await response.arrayBuffer()
   return new Response(buffer, { headers: { 'Content-Type': response.headers.get('content-type') ?? 'application/octet-stream' } })
+})
+
+// ─── Download Center ──────────────────────────────────────────────────────────
+
+app.get('/api/download-center/tasks', async (c) => {
+  const bookshelfIdParam = c.req.query('bookshelfId')
+  if (!bookshelfIdParam)
+    return c.json({ error: 'missing bookshelfId' }, 400)
+
+  const { db } = getDb()
+  const tasks = await listDownloadTasks(db, bookshelfIdParam)
+
+  const stats = {
+    total: tasks.length,
+    pending: tasks.filter(t => t.status === 'pending').length,
+    running: tasks.filter(t => t.status === 'running').length,
+    completed: tasks.filter(t => t.status === 'completed').length,
+    failed: tasks.filter(t => t.status === 'failed').length,
+    paused: tasks.filter(t => t.status === 'paused').length,
+  }
+
+  return c.json({ tasks, stats })
+})
+
+app.post('/api/download-center/pause', async (c) => {
+  const body = await c.req.json<{ bookshelfId?: string }>()
+  if (!body.bookshelfId)
+    return c.json({ error: 'missing bookshelfId' }, 400)
+
+  const ctx = await resolveBookshelfContext(body.bookshelfId)
+  if (!ctx)
+    return c.json({ error: 'not found' }, 404)
+
+  // Cancel the running cache job
+  if (ctx.source.bookSourceType === 2)
+    ctx.app.comicCache.cancelCacheJob(ctx.source.id, ctx.item.bookUrl)
+  else
+    ctx.app.bookshelfCache.cancelCacheJob(body.bookshelfId)
+
+  // Mark DB tasks
+  await pauseActiveTasks(ctx.db, body.bookshelfId)
+  return c.json({ ok: true })
+})
+
+app.post('/api/download-center/resume', async (c) => {
+  const body = await c.req.json<{ bookshelfId?: string }>()
+  if (!body.bookshelfId)
+    return c.json({ error: 'missing bookshelfId' }, 400)
+
+  const ctx = await resolveBookshelfContext(body.bookshelfId)
+  if (!ctx)
+    return c.json({ error: 'not found' }, 404)
+
+  // Reset paused tasks to pending
+  await resumePausedTasks(ctx.db, body.bookshelfId)
+
+  // Get the pending chapters and restart
+  const allChapters = await getChapterList(ctx.db, body.bookshelfId)
+  const pendingTasks = await listDownloadTasks(ctx.db, body.bookshelfId)
+  const pendingIds = new Set(pendingTasks.filter(t => t.status === 'pending').map(t => t.chapterId))
+  const pendingChapters = allChapters.filter(ch => pendingIds.has(ch.id ?? ch.url))
+
+  if (!pendingChapters.length)
+    return c.json({ ok: true, started: false, message: '没有待处理章节' })
+
+  if (ctx.source.bookSourceType === 2) {
+    const onChapterDone = async (chapter: { id?: string, url: string }, ok: boolean, error?: string) => {
+      const taskId = `${body.bookshelfId}::${chapter.id ?? chapter.url}`
+      await updateDownloadTaskStatus(ctx.db, taskId, ok ? 'completed' : 'failed', error)
+    }
+    const result = ctx.app.comicCache.startCacheAll(ctx.source, ctx.item.bookUrl, pendingChapters, ctx.item.name, onChapterDone)
+    return c.json({ ok: true, ...result })
+  }
+
+  if (ctx.source.bookSourceType === 0) {
+    const result = ctx.app.bookshelfCache.startCacheAll(
+      ctx.source,
+      ctx.item.id,
+      ctx.item.bookUrl,
+      pendingChapters,
+      ctx.item.name,
+      async (chapterId, filePath) => {
+        await upsertChapterContentRecord(ctx.db, ctx.item.id, chapterId, filePath)
+      },
+      async (chapter, ok, error) => {
+        const taskId = `${body.bookshelfId}::${chapter.id ?? chapter.url}`
+        await updateDownloadTaskStatus(ctx.db, taskId, ok ? 'completed' : 'failed', error)
+      },
+    )
+    return c.json({ ok: true, ...result })
+  }
+
+  return c.json({ error: 'unsupported source type' }, 400)
+})
+
+app.post('/api/download-center/retry-failed', async (c) => {
+  const body = await c.req.json<{ bookshelfId?: string }>()
+  if (!body.bookshelfId)
+    return c.json({ error: 'missing bookshelfId' }, 400)
+
+  const ctx = await resolveBookshelfContext(body.bookshelfId)
+  if (!ctx)
+    return c.json({ error: 'not found' }, 404)
+
+  await retryFailedTasks(ctx.db, body.bookshelfId)
+
+  // Get newly-pending (previously failed) chapters and restart
+  const allChapters = await getChapterList(ctx.db, body.bookshelfId)
+  const updatedTasks = await listDownloadTasks(ctx.db, body.bookshelfId)
+  const pendingIds = new Set(updatedTasks.filter(t => t.status === 'pending').map(t => t.chapterId))
+  const pendingChapters = allChapters.filter(ch => pendingIds.has(ch.id ?? ch.url))
+
+  if (!pendingChapters.length)
+    return c.json({ ok: true, started: false, message: '没有失败章节' })
+
+  if (ctx.source.bookSourceType === 2) {
+    const onChapterDone = async (chapter: { id?: string, url: string }, ok: boolean, error?: string) => {
+      const taskId = `${body.bookshelfId}::${chapter.id ?? chapter.url}`
+      await updateDownloadTaskStatus(ctx.db, taskId, ok ? 'completed' : 'failed', error)
+    }
+    const result = ctx.app.comicCache.startCacheAll(ctx.source, ctx.item.bookUrl, pendingChapters, ctx.item.name, onChapterDone)
+    return c.json({ ok: true, ...result })
+  }
+
+  if (ctx.source.bookSourceType === 0) {
+    const result = ctx.app.bookshelfCache.startCacheAll(
+      ctx.source,
+      ctx.item.id,
+      ctx.item.bookUrl,
+      pendingChapters,
+      ctx.item.name,
+      async (chapterId, filePath) => {
+        await upsertChapterContentRecord(ctx.db, ctx.item.id, chapterId, filePath)
+      },
+      async (chapter, ok, error) => {
+        const taskId = `${body.bookshelfId}::${chapter.id ?? chapter.url}`
+        await updateDownloadTaskStatus(ctx.db, taskId, ok ? 'completed' : 'failed', error)
+      },
+    )
+    return c.json({ ok: true, ...result })
+  }
+
+  return c.json({ error: 'unsupported source type' }, 400)
+})
+
+// ─── CBZ Export (from cached chapters only) ───────────────────────────────────
+
+app.post('/api/cbz/export', async (c) => {
+  const body = await c.req.json<{ bookshelfId?: string, chapterIds?: string[] }>()
+  if (!body.bookshelfId || !body.chapterIds?.length)
+    return c.json({ error: 'missing bookshelfId or chapterIds' }, 400)
+
+  const ctx = await resolveBookshelfContext(body.bookshelfId)
+  if (!ctx)
+    return c.json({ error: 'not found' }, 404)
+  if (ctx.source.bookSourceType !== 2)
+    return c.json({ error: '仅漫画书源支持 CBZ 导出' }, 400)
+
+  const allChapters = await getChapterList(ctx.db, body.bookshelfId)
+  const selectedSet = new Set(body.chapterIds)
+  const selected = allChapters.filter(ch => ch.id && selectedSet.has(ch.id))
+
+  if (!selected.length)
+    return c.json({ error: '未找到选中章节' }, 400)
+
+  const safeId = body.bookshelfId.replace(/:/g, '_')
+  const exportsDir = join(rootDir, 'cache', 'exports', safeId)
+  const bookName = ctx.item.name
+
+  const jobId = ctx.app.downloadJobs.start(async (onProgress) => {
+    const partCount = Math.ceil(selected.length / 100)
+    const { exportedFiles } = await buildCbzExport(
+      ctx.app.comicCache,
+      ctx.source.id,
+      ctx.item.bookUrl,
+      bookName,
+      selected,
+      exportsDir,
+      (current, total, filename) => {
+        onProgress({ phase: 'pack', current, total, message: `打包 ${filename}` })
+      },
+    )
+    return {
+      localExport: true as const,
+      filename: exportedFiles[0] ?? 'export.cbz',
+      mimeType: 'application/vnd.comicbook+zip',
+      exportDir: exportsDir,
+      exportedFiles,
+    }
+  })
+
+  return c.json({ jobId })
+})
+
+app.get('/api/cbz/cached-chapters', async (c) => {
+  const bookshelfIdParam = c.req.query('bookshelfId')
+  if (!bookshelfIdParam)
+    return c.json({ error: 'missing bookshelfId' }, 400)
+
+  const ctx = await resolveBookshelfContext(bookshelfIdParam)
+  if (!ctx)
+    return c.json({ error: 'not found' }, 404)
+  if (ctx.source.bookSourceType !== 2)
+    return c.json({ cachedChapterIds: [] })
+
+  const cachedKeys = new Set(
+    await ctx.app.comicCache.listCachedChapterKeys(ctx.source.id, ctx.item.bookUrl),
+  )
+  const chapters = await getChapterList(ctx.db, bookshelfIdParam)
+  const cachedChapterIds = chapters
+    .filter(ch => ch.id && cachedKeys.has(ctx.app.comicCache.chapterKey(ch.url)))
+    .map(ch => ch.id!)
+
+  return c.json({ cachedChapterIds })
 })
 
 const defaultHeaders = { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }

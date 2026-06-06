@@ -64,6 +64,31 @@ export interface DownloadProgress {
   cachedChapters?: number
 }
 
+export interface DownloadTaskItem {
+  id: string
+  chapterId: string
+  chapterName: string
+  chapterUrl: string
+  sortIndex: number
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'paused'
+  error: string | null
+  updatedAt: string
+}
+
+export interface DownloadCenterStats {
+  total: number
+  pending: number
+  running: number
+  completed: number
+  failed: number
+  paused: number
+}
+
+export interface DownloadCenterResponse {
+  tasks: DownloadTaskItem[]
+  stats: DownloadCenterStats
+}
+
 export interface DownloadJobSnapshot {
   id: string
   status: 'running' | 'done' | 'error'
@@ -343,6 +368,46 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bookshelfId }),
+    })
+  },
+
+  getDownloadCenterTasks(bookshelfId: string) {
+    return getJson<DownloadCenterResponse>(`/api/download-center/tasks?${new URLSearchParams({ bookshelfId })}`)
+  },
+
+  pauseDownloadCenter(bookshelfId: string) {
+    return mutateJson<{ ok: boolean }>('/api/download-center/pause', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bookshelfId }),
+    })
+  },
+
+  resumeDownloadCenter(bookshelfId: string) {
+    return mutateJson<{ ok: boolean, started?: boolean }>('/api/download-center/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bookshelfId }),
+    })
+  },
+
+  retryFailedDownloadTasks(bookshelfId: string) {
+    return mutateJson<{ ok: boolean, started?: boolean }>('/api/download-center/retry-failed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bookshelfId }),
+    })
+  },
+
+  getCbzCachedChapters(bookshelfId: string) {
+    return getJson<{ cachedChapterIds: string[] }>(`/api/cbz/cached-chapters?${new URLSearchParams({ bookshelfId })}`)
+  },
+
+  startCbzExport(bookshelfId: string, chapterIds: string[]) {
+    return mutateJson<{ jobId: string }>('/api/cbz/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bookshelfId, chapterIds }),
     })
   },
 }

@@ -22,6 +22,7 @@ export class NovelBookshelfCache {
   private contentRoot: string
   private coverRoot: string
   private jobs = new Map<string, CacheJobProgress>()
+  private abortFlags = new Map<string, boolean>()
 
   constructor(private options: NovelBookshelfCacheOptions) {
     this.contentRoot = join(options.projectRoot, 'cache', 'content')
@@ -186,13 +187,23 @@ export class NovelBookshelfCache {
     chapters: Chapter[],
     bookName?: string,
     onChapterCached?: (chapterId: string, filePath: string) => Promise<void>,
+    onChapterDone?: (chapter: Chapter, ok: boolean, error?: string) => void,
   ): { started: boolean, alreadyRunning?: boolean } {
     const existing = this.jobs.get(bookshelfId)
     if (existing?.running)
       return { started: false, alreadyRunning: true }
 
-    void this.runCacheJob(source, bookshelfId, bookUrl, chapters, bookName, onChapterCached)
+    this.abortFlags.set(bookshelfId, false)
+    void this.runCacheJob(source, bookshelfId, bookUrl, chapters, bookName, onChapterCached, onChapterDone)
     return { started: true }
+  }
+
+  cancelCacheJob(bookshelfId: string): void {
+    this.abortFlags.set(bookshelfId, true)
+  }
+
+  isJobRunning(bookshelfId: string): boolean {
+    return Boolean(this.jobs.get(bookshelfId)?.running)
   }
 
   async clearBook(bookshelfId: string): Promise<void> {
@@ -240,6 +251,7 @@ export class NovelBookshelfCache {
     toc: Chapter[],
     _bookName?: string,
     onChapterCached?: (chapterId: string, filePath: string) => Promise<void>,
+    onChapterDone?: (chapter: Chapter, ok: boolean, error?: string) => void,
   ): Promise<void> {
     try {
       const enriched = this.enrichToc(toc)
@@ -262,12 +274,32 @@ export class NovelBookshelfCache {
 
       let completed = 0
       await mapPool(toCache, NOVEL_CACHE_CONCURRENCY, async (chapter) => {
-        const result = await withRetry(
-          () => this.cacheChapter(source, bookshelfId, chapter),
-          { retries: 2, delayMs: 2000 },
-        )
-        if (result.ok && result.filePath && chapter.id && onChapterCached)
-          await onChapterCached(chapter.id, result.filePath)
+        if (this.abortFlags.get(bookshelfId)) {
+          return
+        }
+
+        let ok = false
+        let errorMsg: string | undefined
+        let filePath: string | undefined
+        try {
+          const result = await withRetry(
+            () => this.cacheChapter(source, bookshelfId, chapter),
+            { retries: 2, delayMs: 2000 },
+          )
+          ok = result.ok
+          filePath = result.filePath
+          if (!result.ok)
+            errorMsg = '章节无正文'
+        }
+        catch (err) {
+          errorMsg = err instanceof Error ? err.message : '缓存失败'
+        }
+
+        if (ok && filePath && chapter.id && onChapterCached)
+          await onChapterCached(chapter.id, filePath)
+
+        onChapterDone?.(chapter, ok, errorMsg)
+
         completed++
         this.jobs.set(bookshelfId, {
           running: true,

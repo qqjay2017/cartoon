@@ -55,3 +55,16 @@ export const sourceCookies = pgTable('source_cookies', {
   cookies: text('cookies').notNull().default(''),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+export const downloadTasks = pgTable('download_tasks', {
+  id: text('id').primaryKey(),
+  bookshelfId: text('bookshelf_id').notNull().references(() => bookshelf.id, { onDelete: 'cascade' }),
+  chapterId: text('chapter_id').notNull(),
+  chapterName: text('chapter_name').notNull(),
+  chapterUrl: text('chapter_url').notNull(),
+  sortIndex: integer('sort_index').notNull().default(0),
+  status: text('status').notNull().default('pending'),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})

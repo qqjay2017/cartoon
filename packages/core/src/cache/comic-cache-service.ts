@@ -75,6 +75,7 @@ export class ComicCacheService {
   private configPath: string
   private cacheRoot: string
   private jobs = new Map<string, CacheJobProgress>()
+  private abortFlags = new Map<string, boolean>()
 
   constructor(private options: ComicCacheServiceOptions) {
     this.configPath = join(options.projectRoot, 'cache', 'config.json')
@@ -355,13 +356,15 @@ export class ComicCacheService {
     bookUrl: string,
     chapters?: Chapter[],
     bookName?: string,
+    onChapterDone?: (chapter: Chapter, ok: boolean, error?: string) => void,
   ): { started: boolean, alreadyRunning?: boolean } {
     const key = this.bookKey(source.id, bookUrl)
     const existing = this.jobs.get(key)
     if (existing?.running)
       return { started: false, alreadyRunning: true }
 
-    void this.runCacheJob(source, bookUrl, 'all', undefined, 100, chapters, bookName)
+    this.abortFlags.set(key, false)
+    void this.runCacheJob(source, bookUrl, 'all', undefined, 100, chapters, bookName, onChapterDone)
     return { started: true }
   }
 
@@ -376,8 +379,18 @@ export class ComicCacheService {
     if (existing?.running)
       return { started: false, alreadyRunning: true }
 
+    this.abortFlags.set(key, false)
     void this.runCacheJob(source, bookUrl, 'prefetch', chapterUrl, count)
     return { started: true }
+  }
+
+  cancelCacheJob(sourceId: string, bookUrl: string): void {
+    const key = this.bookKey(sourceId, bookUrl)
+    this.abortFlags.set(key, true)
+  }
+
+  isJobRunning(sourceId: string, bookUrl: string): boolean {
+    return Boolean(this.jobs.get(this.bookKey(sourceId, bookUrl))?.running)
   }
 
   async clearBook(sourceId: string, bookUrl: string): Promise<void> {
@@ -395,6 +408,7 @@ export class ComicCacheService {
     prefetchCount = 100,
     presetChapters?: Chapter[],
     presetBookName?: string,
+    onChapterDone?: (chapter: Chapter, ok: boolean, error?: string) => void,
   ): Promise<void> {
     const key = this.bookKey(source.id, bookUrl)
 
@@ -441,12 +455,22 @@ export class ComicCacheService {
       let completed = 0
       const concurrency = chapterConcurrency(pending)
       await mapPool(pending, concurrency, async (chapter) => {
+        if (this.abortFlags.get(key)) {
+          return
+        }
+
+        let ok = false
+        let errorMsg: string | undefined
         try {
           await this.cacheChapter(source, bookUrl, chapter, bookName)
+          ok = true
         }
         catch (error) {
+          errorMsg = error instanceof Error ? error.message : '缓存失败'
           console.error(`[comic-cache] ${chapter.name}:`, error)
         }
+
+        onChapterDone?.(chapter, ok, errorMsg)
         completed++
         this.jobs.set(key, {
           running: true,

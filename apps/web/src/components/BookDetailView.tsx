@@ -9,6 +9,8 @@ import {
 } from '~/lib/api'
 import { Button } from '~/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
+import { DownloadCenterModal } from '~/components/DownloadCenterModal'
+import { CbzExportModal } from '~/components/CbzExportModal'
 
 interface Props {
   bookshelfId: string
@@ -23,6 +25,8 @@ export function BookDetailView({ bookshelfId }: Props) {
   const [downloadError, setDownloadError] = useState('')
   const [downloadJob, setDownloadJob] = useState<DownloadJobSnapshot | null>(null)
   const [cachingChapterIndex, setCachingChapterIndex] = useState<number | null>(null)
+  const [showDownloadCenter, setShowDownloadCenter] = useState(false)
+  const [showCbzExport, setShowCbzExport] = useState(false)
 
   const {
     data: detail,
@@ -68,10 +72,11 @@ export function BookDetailView({ bookshelfId }: Props) {
     setCacheMsg('')
     try {
       const r = await api.cacheAll(bookshelfId)
-      setCacheMsg(r.alreadyRunning ? '缓存任务已在运行' : '已开始缓存全部章节')
+      setCacheMsg(r.alreadyRunning ? '缓存任务已在运行' : '已开始缓存全部章节，可在下载中心查看进度')
       await refetchCache()
       await refetchCachedChapters()
-    } catch (e) {
+    }
+    catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '失败')
     }
   }
@@ -83,7 +88,8 @@ export function BookDetailView({ bookshelfId }: Props) {
       await queryClient.invalidateQueries({ queryKey: ['book', bookshelfId] })
       await queryClient.invalidateQueries({ queryKey: ['toc', bookshelfId] })
       setCacheMsg('元数据已刷新')
-    } catch (e) {
+    }
+    catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '失败')
     }
   }
@@ -108,14 +114,16 @@ export function BookDetailView({ bookshelfId }: Props) {
         setCacheMsg(`「${chapterName}」已缓存`)
       await refetchCache()
       await refetchCachedChapters()
-    } catch (e) {
+    }
+    catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '缓存失败')
-    } finally {
+    }
+    finally {
       setCachingChapterIndex(null)
     }
   }
 
-  async function exportBook(format: 'epub' | 'cbz') {
+  async function exportBook(format: 'epub') {
     if (!detail || downloading)
       return
 
@@ -137,9 +145,11 @@ export function BookDetailView({ bookshelfId }: Props) {
         const files = result.exportedFiles.join('、')
         setDownloadMsg(`已导出 ${result.exportedFiles.length} 个文件到 ${result.exportDir}：${files}`)
       }
-    } catch (e) {
+    }
+    catch (e) {
       setDownloadError(e instanceof Error ? e.message : '导出失败')
-    } finally {
+    }
+    finally {
       setDownloading(false)
       setDownloadJob(null)
       await refetchCache()
@@ -230,14 +240,23 @@ export function BookDetailView({ bookshelfId }: Props) {
                 >
                   {cacheStatus?.caching ? '缓存进行中...' : '缓存全部'}
                 </Button>
+
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setShowDownloadCenter(true)}
+                >
+                  下载中心
+                </Button>
+
                 {isComic ? (
                   <Button
                     size="sm"
                     variant="secondary"
-                    onClick={() => void exportBook('cbz')}
-                    disabled={downloading || !chapters.length}
+                    onClick={() => setShowCbzExport(true)}
+                    disabled={!chapters.length}
                   >
-                    {downloading ? '导出中...' : '导出 CBZ'}
+                    导出 CBZ
                   </Button>
                 ) : (
                   <Button
@@ -249,6 +268,7 @@ export function BookDetailView({ bookshelfId }: Props) {
                     {downloading ? '导出中...' : '导出 EPUB'}
                   </Button>
                 )}
+
                 <Button
                   size="sm"
                   variant="secondary"
@@ -263,9 +283,9 @@ export function BookDetailView({ bookshelfId }: Props) {
                   {formatCacheProgress(cacheStatus, chapters.length)}
                 </p>
               )}
-              {isComic && !downloading && (
+              {isComic && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  漫画 CBZ 按每 100 章分卷，导出后保存在本地缓存目录。
+                  导出 CBZ 前需先缓存章节，每 100 章生成一个文件，保存至本地导出目录。
                 </p>
               )}
               {!isComic && !downloading && cacheStatus && cacheStatus.cachedChapters > 0 && (
@@ -360,6 +380,26 @@ export function BookDetailView({ bookshelfId }: Props) {
           </div>
         </CardContent>
       </Card>
+
+      {showDownloadCenter && (
+        <DownloadCenterModal
+          bookshelfId={bookshelfId}
+          isComic={isComic}
+          open={showDownloadCenter}
+          onClose={() => setShowDownloadCenter(false)}
+        />
+      )}
+
+      {isComic && showCbzExport && (
+        <CbzExportModal
+          bookshelfId={bookshelfId}
+          sourceId={detail.sourceId}
+          bookUrl={detail.bookUrl}
+          chapters={chapters}
+          open={showCbzExport}
+          onClose={() => setShowCbzExport(false)}
+        />
+      )}
     </div>
   )
 }
