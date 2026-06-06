@@ -66,7 +66,9 @@ export async function buildCbzFromCache(
 /**
  * Build CBZ files from a selection of already-cached chapters.
  * Chapters are split into 100-chapter volumes.
- * Output files are saved to `exportsDir`.
+ * `chapterNumbers` must be the 1-based TOC position for each entry in `chapters`
+ * so that filenames reflect real chapter numbers (e.g. 101-200) rather than
+ * always starting from 1.
  */
 export async function buildCbzExport(
   comicCache: ComicCacheService,
@@ -75,6 +77,7 @@ export async function buildCbzExport(
   bookName: string,
   chapters: Chapter[],
   exportsDir: string,
+  chapterNumbers: number[],
   onProgress?: (current: number, total: number, filename: string) => void,
 ): Promise<{ exportedFiles: string[] }> {
   if (!chapters.length)
@@ -88,8 +91,9 @@ export async function buildCbzExport(
   for (let partIndex = 0; partIndex < partCount; partIndex++) {
     const chunkStart = partIndex * CBZ_CHAPTERS_PER_FILE
     const chunk = chapters.slice(chunkStart, chunkStart + CBZ_CHAPTERS_PER_FILE)
-    const chapterStart = chunkStart + 1
-    const chapterEnd = chunkStart + chunk.length
+    // Use actual TOC chapter numbers for the filename
+    const chapterStart = chapterNumbers[chunkStart] ?? (chunkStart + 1)
+    const chapterEnd = chapterNumbers[chunkStart + chunk.length - 1] ?? (chunkStart + chunk.length)
     const filename = cbzPartFilename(bookName, chapterStart, chapterEnd)
     const filePath = join(exportsDir, filename)
 

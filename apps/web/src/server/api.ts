@@ -1182,6 +1182,10 @@ app.post('/api/cbz/export', async (c) => {
   if (!selected.length)
     return c.json({ error: '未找到选中章节' }, 400)
 
+  // Map each selected chapter to its 1-based position in the full TOC for correct filenames
+  const tocIndexMap = new Map(allChapters.map((ch, i) => [ch.id!, i + 1]))
+  const chapterNumbers = selected.map(ch => tocIndexMap.get(ch.id!) ?? 0)
+
   const safeId = body.bookshelfId.replace(/:/g, '_')
   const exportsDir = join(rootDir, 'cache', 'exports', safeId)
   const bookName = ctx.item.name
@@ -1195,6 +1199,7 @@ app.post('/api/cbz/export', async (c) => {
       bookName,
       selected,
       exportsDir,
+      chapterNumbers,
       (current, total, filename) => {
         onProgress({ phase: 'pack', current, total, message: `打包 ${filename}` })
       },

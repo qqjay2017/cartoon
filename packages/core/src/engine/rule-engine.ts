@@ -98,8 +98,22 @@ export class RuleEngine {
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!
       const result = this.parseResultPart(part)
-      if (result)
-        return this.extractResult(current, result.kind, result.regexParts, ctx)
+      if (result) {
+        let value = this.extractResult(current, result.kind, result.regexParts, ctx)
+        // Apply trailing @js: transform(s), e.g. @href@js:code
+        for (let j = i + 1; j < parts.length; j++) {
+          const next = parts[j]!
+          if (next.startsWith('js:')) {
+            value = this.jsRuntime.evaluateRule(
+              `@js:${next.slice(3)}`,
+              { baseUrl: ctx.baseUrl, content: value, src: value, result: value },
+              this.requireSession(),
+              (nested, content, baseUrl) => this.evaluate(nested, { baseUrl, content, src: content }),
+            )
+          }
+        }
+        return value
+      }
 
       const selector = this.toCssSelector(part)
       if (selector)

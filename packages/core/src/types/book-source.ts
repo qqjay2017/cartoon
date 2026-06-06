@@ -29,6 +29,7 @@ export interface TocRule {
   chapterName?: string
   chapterUrl?: string
   updateTime?: string
+  nextTocUrl?: string
 }
 
 export interface ContentRule {

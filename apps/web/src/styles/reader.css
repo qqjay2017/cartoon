@@ -125,7 +125,9 @@ a.reader-btn {
   border-bottom: 1px solid var(--reader-border);
   backdrop-filter: blur(12px);
   flex-shrink: 0;
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
   z-index: 4;
 }
 
@@ -135,6 +137,18 @@ a.reader-btn {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.reader--comic .reader-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+}
+
+.reader--comic .reader-bar--footer {
+  top: auto;
+  bottom: 0;
 }
 
 .reader--comic {
@@ -186,7 +200,11 @@ a.reader-btn {
 
 .reader-btn.primary {
   color: var(--reader-accent);
-  border-color: color-mix(in srgb, var(--reader-accent) 40%, var(--reader-border));
+  border-color: color-mix(
+    in srgb,
+    var(--reader-accent) 40%,
+    var(--reader-border)
+  );
 }
 
 .reader-btn.active {
@@ -224,7 +242,9 @@ a.reader-btn {
   max-width: 42rem;
   margin: 0 auto;
   padding: 28px 20px 56px;
-  font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+  font-family:
+    'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun',
+    serif;
 }
 
 .reader-novel-content {
@@ -259,14 +279,17 @@ a.reader-btn {
   margin: 0;
   padding: 0;
   background: var(--reader-comic-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .reader-comic-scroll img {
   display: block;
   width: 100%;
-  max-width: 100%;
+  max-width: 500px;
   height: auto;
-  margin: 0 auto;
+  margin: 0;
 }
 
 .reader-comic-webtoon {
@@ -550,7 +573,11 @@ a.reader-btn {
 .reader-toc-item:hover,
 .reader-toc-item.active {
   background: rgba(110, 168, 254, 0.12);
-  border-color: color-mix(in srgb, var(--reader-accent) 35%, var(--reader-border));
+  border-color: color-mix(
+    in srgb,
+    var(--reader-accent) 35%,
+    var(--reader-border)
+  );
 }
 
 .reader-toc-item.active {
@@ -580,5 +607,14 @@ a.reader-btn {
   .reader-btn {
     padding: 8px 10px;
     font-size: 0.85rem;
+  }
+}
+
+@media (min-width: 1000px) {
+  .reader-comic-scroll {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 500px));
+    justify-content: center;
+    gap: 0;
   }
 }

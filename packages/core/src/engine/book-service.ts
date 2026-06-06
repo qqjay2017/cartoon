@@ -1,5 +1,5 @@
 import * as cheerio from 'cheerio'
-import { isJsonContent } from './json-rules.js'
+import { isJsonContent, isJsonPathRule } from './json-rules.js'
 import { isJsRule, JsRuntime } from './js-runtime.js'
 import { RuleEngine } from './rule-engine.js'
 import { SourceSession } from './source-session.js'
@@ -204,6 +204,40 @@ export class BookService {
   ): SearchBook[] {
     const engine = this.createEngine(source)
     const ctx = { baseUrl: searchUrl }
+
+    // JSON API search response
+    if (isJsonContent(html) && isJsonPathRule(source.ruleSearch?.bookList)) {
+      const items = engine.parseJsonList(html, source.ruleSearch!.bookList)
+      const results: SearchBook[] = []
+      for (const item of items) {
+        const getField = (rule?: string) =>
+          rule ? engine.parseJsonItem(item, rule, { ...ctx, content: JSON.stringify(item), src: JSON.stringify(item) }) : undefined
+
+        let bookUrl = getField(source.ruleSearch?.bookUrl) ?? ''
+        if (bookUrl && !/^https?:\/\//i.test(bookUrl))
+          bookUrl = new URL(bookUrl, searchUrl).href
+
+        const name = getField(source.ruleSearch?.name)
+        if (!name || !bookUrl)
+          continue
+
+        results.push({
+          sourceId: source.id,
+          sourceName: source.bookSourceName,
+          sourceType: source.bookSourceType,
+          name,
+          author: getField(source.ruleSearch?.author) || undefined,
+          intro: getField(source.ruleSearch?.intro) || undefined,
+          kind: getField(source.ruleSearch?.kind) || undefined,
+          lastChapter: getField(source.ruleSearch?.lastChapter) || undefined,
+          wordCount: getField(source.ruleSearch?.wordCount) || undefined,
+          coverUrl: getField(source.ruleSearch?.coverUrl) || undefined,
+          bookUrl,
+        })
+      }
+      return results
+    }
+
     const $ = cheerio.load(html)
     const list = engine.parseList(html, source.ruleSearch!.bookList, ctx)
     const results: SearchBook[] = []
@@ -368,7 +402,51 @@ export class BookService {
     else if (reverseOrder)
       drafts.reverse()
 
-    return drafts.map(item => item.chapter)
+    const chapters = drafts.map(item => item.chapter)
+
+    // Handle nextTocUrl pagination for HTML-based TOCs
+    const nextTocRule = source.ruleToc.nextTocUrl
+    if (nextTocRule) {
+      let currentContent = content
+      let currentUrl = resolvedTocUrl
+      const maxPages = 30
+      for (let page = 0; page < maxPages; page++) {
+        const nextUrlRaw = engine.evaluate(nextTocRule, {
+          baseUrl: currentUrl,
+          content: currentContent,
+          src: currentContent,
+        })
+        if (!nextUrlRaw) break
+        const nextUrl = /^https?:\/\//i.test(nextUrlRaw)
+          ? nextUrlRaw
+          : new URL(nextUrlRaw, currentUrl).href
+        if (nextUrl === currentUrl) break
+
+        currentUrl = nextUrl
+        currentContent = await this.fetchSourceText(source, currentUrl)
+        const nextEngine = this.createEngine(source)
+        const nextList = nextEngine.parseList(currentContent, listRule, { baseUrl: currentUrl })
+        const $next = cheerio.load(currentContent)
+        nextList.each((_, node) => {
+          const $item = $next(node)
+          const name = source.ruleToc?.chapterName
+            ? nextEngine.parseElement($item, source.ruleToc.chapterName, { baseUrl: currentUrl })
+            : $item.text().trim()
+          let url = ''
+          if (source.ruleToc?.chapterUrl) {
+            url = nextEngine.parseElement($item, source.ruleToc.chapterUrl, { baseUrl: currentUrl })
+          }
+          else {
+            url = $item.find('a').attr('href') ?? $item.attr('href') ?? ''
+            url = url.startsWith('http') ? url : new URL(url, currentUrl).href
+          }
+          if (name && url)
+            chapters.push({ name, url })
+        })
+      }
+    }
+
+    return chapters
   }
 
   async getChapterContent(
@@ -425,34 +503,34 @@ export class BookService {
     }
 
     if (source.bookSourceType === 2) {
-      const normalizedHtml = html.replace(/<\s+img/gi, '<img')
-      let images: string[] = []
+      let images = extractComicImages(html, resolvedUrl, content)
 
-      if (normalizedHtml.trim()) {
-        const $ = cheerio.load(normalizedHtml)
-        images = $('img')
-          .map((_, img) => {
-            const src = $(img).attr('src') ?? $(img).attr('data-original') ?? ''
-            if (!src || src.includes('app_logo') || src.includes('/images/logo'))
-              return ''
-            return src.startsWith('http') ? src : new URL(src, resolvedUrl).href
+      if (nextContentRule && images.length > 0) {
+        let currentUrl = resolvedUrl
+        const maxPages = 50
+        for (let page = 0; page < maxPages; page++) {
+          const nextUrlRaw = engine.evaluate(nextContentRule, {
+            baseUrl: currentUrl,
+            content,
+            src: content,
+            result: content,
           })
-          .get()
-          .filter(Boolean)
-      }
-
-      if (!images.length && isJsonContent(content)) {
-        try {
-          const data = JSON.parse(content) as {
-            data?: { info?: { images?: { images?: Array<{ url?: string }> } } }
-          }
-          const list = data.data?.info?.images?.images ?? []
-          images = list
-            .map(item => item.url ? `https://f40-1-4.g-mh.online${item.url}` : '')
-            .filter(Boolean)
-        }
-        catch {
-          // ignore
+          if (!nextUrlRaw)
+            break
+          const nextUrl = /^https?:\/\//i.test(nextUrlRaw)
+            ? nextUrlRaw
+            : new URL(nextUrlRaw, currentUrl).href
+          if (!isSameApiChapterPage(currentUrl, nextUrl))
+            break
+          currentUrl = nextUrl
+          content = await this.fetchSourceText(source, currentUrl)
+          const pageHtml = engine.evaluate(rule, {
+            baseUrl: currentUrl,
+            content,
+            src: content,
+            result: content,
+          })
+          images = [...images, ...extractComicImages(pageHtml, currentUrl, content)]
         }
       }
 
@@ -487,6 +565,59 @@ function isResolvedTocApiUrl(url: string): boolean {
     if (/[?&]mid=\d+/i.test(search))
       return true
     return false
+  }
+  catch {
+    return false
+  }
+}
+
+/** 从漫画章节返回的 HTML/JSON 中提取图片 URL 列表 */
+function extractComicImages(html: string, baseUrl: string, rawContent: string): string[] {
+  const normalizedHtml = html.replace(/<\s+img/gi, '<img')
+
+  if (normalizedHtml.trim()) {
+    const $ = cheerio.load(normalizedHtml)
+    const imgs = $('img')
+      .map((_, img) => {
+        const src = $(img).attr('src') ?? $(img).attr('data-original') ?? ''
+        if (!src || src.includes('app_logo') || src.includes('/images/logo'))
+          return ''
+        return src.startsWith('http') ? src : new URL(src, baseUrl).href
+      })
+      .get()
+      .filter(Boolean)
+    if (imgs.length)
+      return imgs
+  }
+
+  if (isJsonContent(rawContent)) {
+    try {
+      const data = JSON.parse(rawContent) as {
+        data?: { info?: { images?: { images?: Array<{ url?: string }> } } }
+      }
+      const list = data.data?.info?.images?.images ?? []
+      return list
+        .map(item => item.url ? `https://f40-1-4.g-mh.online${item.url}` : '')
+        .filter(Boolean)
+    }
+    catch {
+      // ignore
+    }
+  }
+
+  return []
+}
+
+/** 漫画 API 翻页：同一章节路径、page 参数递增 */
+function isSameApiChapterPage(currentUrl: string, nextUrl: string): boolean {
+  try {
+    const cur = new URL(currentUrl)
+    const nxt = new URL(nextUrl)
+    if (cur.pathname !== nxt.pathname)
+      return false
+    const curPage = Number(cur.searchParams.get('page') ?? '0')
+    const nxtPage = Number(nxt.searchParams.get('page') ?? '0')
+    return nxtPage === curPage + 1
   }
   catch {
     return false

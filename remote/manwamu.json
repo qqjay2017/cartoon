@@ -1,0 +1,36 @@
+{
+  "bookSourceName": "漫蛙",
+  "bookSourceGroup": "🎨 漫画",
+  "bookSourceType": 2,
+  "bookSourceUrl": "https://manwamu.cc",
+  "enabled": true,
+  "enabledCookieJar": true,
+  "header": "{\"User-Agent\": \"Mozilla/5.0 (Linux; Android 8.1.0; JKM-AL00b Build/HUAWEIJKM-AL00b; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/66.0.3359.126 MQQBrowser/6.2 TBS/044807 Mobile Safari/537.36\"}",
+  "searchUrl": "/api/search?type=mh&page={{page}}&pageSize=20&keyword={{key}}",
+  "ruleSearch": {
+    "bookList": "$.data.list",
+    "bookUrl": "$.url",
+    "coverUrl": "$.cover",
+    "name": "$.title",
+    "author": "$.author",
+    "kind": "$.tags"
+  },
+  "ruleBookInfo": {
+    "name": ".comic-title@data-original-title",
+    "author": "a[href*='/search?author=']@text",
+    "kind": "#tagsContainer a@text",
+    "coverUrl": ".comic-cover img@src",
+    "intro": ".comic-desc@text",
+    "tocUrl": ""
+  },
+  "ruleToc": {
+    "chapterList": ".chapter-grid a",
+    "chapterName": "@data-title",
+    "chapterUrl": "@href@js:var id = result.split('/').pop(); 'https://manwamu.cc/api/comic/image/' + id + '?count=true&page=1'",
+    "nextTocUrl": ""
+  },
+  "ruleContent": {
+    "content": "@js:\nvar d = JSON.parse(result);\nvar imgs = d.data.images;\nvar html = '';\nif (imgs) {\n  for (var i = 0; i < imgs.length; i++) {\n    html += '<img src=\"' + imgs[i].url + '\">\\n';\n  }\n}\nhtml",
+    "nextContentUrl": "@js:\nvar d = JSON.parse(result);\nvar p = d.data && d.data.pagination;\nif (p && p.current_page < p.total_pages) {\n  baseUrl.replace('page=' + p.current_page, 'page=' + (p.current_page + 1));\n}"
+  }
+}
