@@ -297,6 +297,14 @@ export const api = {
     return getJson<BookCacheStatus>(`/api/cache/status?${params}`)
   },
 
+  repairComicMeta(bookshelfId: string) {
+    return mutateJson<{ repaired: number, alreadyTracked: number }>('/api/cache/repair-meta', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bookshelfId }),
+    })
+  },
+
   startDownloadJob(
     sourceId: string,
     bookUrl: string,

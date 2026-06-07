@@ -735,10 +735,13 @@ app.get('/api/cache/chapters', async (c) => {
     return c.json({ error: 'not found' }, 404)
 
   if (ctx.source.bookSourceType === 2) {
-    const cachedChapterIds = await ctx.app.comicCache.listCachedChapterKeys(
-      ctx.source.id,
-      ctx.item.bookUrl,
+    const cachedKeys = new Set(
+      await ctx.app.comicCache.listCachedChapterKeys(ctx.source.id, ctx.item.bookUrl),
     )
+    const chapters = await getChapterList(ctx.db, bookshelfIdParam)
+    const cachedChapterIds = chapters
+      .filter(ch => ch.id && cachedKeys.has(ctx.app.comicCache.chapterKey(ch.url)))
+      .map(ch => ch.id!)
     return c.json({ cachedChapterIds })
   }
 
@@ -965,6 +968,27 @@ app.delete('/api/cache', async (c) => {
     return c.json({ error: 'missing params' }, 400)
   await app.comicCache.clearBook(sourceId, bookUrl)
   return c.json({ ok: true })
+})
+
+app.post('/api/cache/repair-meta', async (c) => {
+  const body = await c.req.json<{ bookshelfId?: string }>()
+  if (!body.bookshelfId)
+    return c.json({ error: 'missing bookshelfId' }, 400)
+
+  const ctx = await resolveBookshelfContext(body.bookshelfId)
+  if (!ctx)
+    return c.json({ error: 'not found' }, 404)
+  if (ctx.source.bookSourceType !== 2)
+    return c.json({ error: 'only supported for comic sources' }, 400)
+
+  const chapters = await getChapterList(ctx.db, body.bookshelfId)
+  const result = await ctx.app.comicCache.repairMeta(
+    ctx.source.id,
+    ctx.item.bookUrl,
+    chapters,
+    ctx.item.name,
+  )
+  return c.json(result)
 })
 
 app.get('/api/cache/novel-cover', async (c) => {

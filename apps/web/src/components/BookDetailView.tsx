@@ -81,6 +81,19 @@ export function BookDetailView({ bookshelfId }: Props) {
     }
   }
 
+  async function repairMeta() {
+    setCacheMsg('')
+    try {
+      const r = await api.repairComicMeta(bookshelfId)
+      setCacheMsg(`修复完成：新增 ${r.repaired} 章，已有 ${r.alreadyTracked} 章`)
+      await refetchCache()
+      await refetchCachedChapters()
+    }
+    catch (e) {
+      setCacheMsg(e instanceof Error ? e.message : '修复失败')
+    }
+  }
+
   async function reloadMeta() {
     setCacheMsg('')
     try {
@@ -266,6 +279,17 @@ export function BookDetailView({ bookshelfId }: Props) {
                     disabled={downloading || !chapters.length}
                   >
                     {downloading ? '导出中...' : '导出 EPUB'}
+                  </Button>
+                )}
+
+                {isComic && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void repairMeta()}
+                    disabled={cacheStatus?.caching || !chapters.length}
+                  >
+                    修复缓存索引
                   </Button>
                 )}
 

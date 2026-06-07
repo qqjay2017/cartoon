@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { imageExtFromUrl } from '../download/cbz-builder.js'
@@ -76,6 +76,7 @@ export class ComicCacheService {
   private cacheRoot: string
   private jobs = new Map<string, CacheJobProgress>()
   private abortFlags = new Map<string, boolean>()
+  private metaWriteLocks = new Map<string, Promise<void>>()
 
   constructor(private options: ComicCacheServiceOptions) {
     this.configPath = join(options.projectRoot, 'cache', 'config.json')
@@ -281,23 +282,26 @@ export class ComicCacheService {
       files.push(fileName)
     }
 
-    const meta = await this.readBookMeta(sourceId, bookUrl) ?? {
-      sourceId,
-      bookUrl: normalizeUrl(bookUrl),
-      updatedAt: new Date().toISOString(),
-      chapters: {},
-    }
+    const key = this.bookKey(sourceId, bookUrl)
+    await this.withMetaWriteLock(key, async () => {
+      const meta = await this.readBookMeta(sourceId, bookUrl) ?? {
+        sourceId,
+        bookUrl: normalizeUrl(bookUrl),
+        updatedAt: new Date().toISOString(),
+        chapters: {},
+      }
 
-    meta.bookName = bookName ?? meta.bookName
-    meta.updatedAt = new Date().toISOString()
-    meta.chapters[this.chapterKey(chapter.url)] = {
-      name: chapter.name,
-      url: normalizeUrl(chapter.url),
-      files,
-      cachedAt: new Date().toISOString(),
-    }
+      meta.bookName = bookName ?? meta.bookName
+      meta.updatedAt = new Date().toISOString()
+      meta.chapters[this.chapterKey(chapter.url)] = {
+        name: chapter.name,
+        url: normalizeUrl(chapter.url),
+        files,
+        cachedAt: new Date().toISOString(),
+      }
 
-    await this.writeBookMeta(sourceId, bookUrl, meta)
+      await this.writeBookMeta(sourceId, bookUrl, meta)
+    })
   }
 
   /** 将打包好的 CBZ 写入该书缓存目录（与 chapters/、meta.json 同级） */
@@ -398,6 +402,61 @@ export class ComicCacheService {
     this.jobs.delete(key)
     const bookDir = this.getBookDir(sourceId, bookUrl)
     await rm(bookDir, { recursive: true, force: true })
+  }
+
+  /** Rebuild meta.json from existing chapter directories on disk.
+   *  Useful when meta.json lost entries due to a prior race condition bug. */
+  async repairMeta(
+    sourceId: string,
+    bookUrl: string,
+    chapters: Chapter[],
+    bookName?: string,
+  ): Promise<{ repaired: number, alreadyTracked: number }> {
+    const key = this.bookKey(sourceId, bookUrl)
+    return this.withMetaWriteLock(key, async () => {
+      const meta = await this.readBookMeta(sourceId, bookUrl) ?? {
+        sourceId,
+        bookUrl: normalizeUrl(bookUrl),
+        updatedAt: new Date().toISOString(),
+        chapters: {},
+      }
+      if (bookName)
+        meta.bookName = bookName
+
+      let repaired = 0
+      let alreadyTracked = 0
+
+      for (const chapter of chapters) {
+        const chKey = this.chapterKey(chapter.url)
+        if (meta.chapters[chKey]) {
+          alreadyTracked++
+          continue
+        }
+        const chapterDir = this.getChapterDir(sourceId, bookUrl, chapter.url)
+        let files: string[]
+        try {
+          const s = await stat(chapterDir)
+          if (!s.isDirectory()) continue
+          files = (await readdir(chapterDir)).filter(f => /\.(jpe?g|png|webp|gif|avif)$/i.test(f)).sort()
+        }
+        catch {
+          continue
+        }
+        if (!files.length) continue
+
+        meta.chapters[chKey] = {
+          name: chapter.name,
+          url: normalizeUrl(chapter.url),
+          files,
+          cachedAt: new Date().toISOString(),
+        }
+        repaired++
+      }
+
+      meta.updatedAt = new Date().toISOString()
+      await this.writeBookMeta(sourceId, bookUrl, meta)
+      return { repaired, alreadyTracked }
+    })
   }
 
   private async runCacheJob(
@@ -515,6 +574,16 @@ export class ComicCacheService {
     const bookDir = this.getBookDir(sourceId, bookUrl)
     await mkdir(bookDir, { recursive: true })
     await writeFile(this.metaPath(sourceId, bookUrl), JSON.stringify(meta, null, 2), 'utf8')
+  }
+
+  private withMetaWriteLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.metaWriteLocks.get(key) ?? Promise.resolve()
+    let resolveLock!: () => void
+    const lockHeld = new Promise<void>(r => (resolveLock = r))
+    this.metaWriteLocks.set(key, lockHeld.catch(() => {}))
+    const result = prev.then(fn)
+    result.then(resolveLock, resolveLock)
+    return result
   }
 
   private async resolveCacheRoot(): Promise<string> {
