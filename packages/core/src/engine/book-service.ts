@@ -342,21 +342,51 @@ export class BookService {
     const reverseOrder = source.ruleToc.chapterList.includes('[-1:0]')
 
     if (isJsonContent(content)) {
-      const items = engine.parseJsonList(content, source.ruleToc.chapterList)
-      const chapters = items.map((item) => {
-        const name = engine.parseJsonItem(item, source.ruleToc?.chapterName, ctx)
-        let url = engine.parseJsonItem(item, source.ruleToc?.chapterUrl, { ...ctx, jsonItem: item })
-        if (url && !/^https?:\/\//i.test(url))
-          url = new URL(url, source.bookSourceUrl).href
+      const parseJsonPage = (pageContent: string, pageUrl: string) => {
+        const pageEngine = this.createEngine(source)
+        const pageCtx = { baseUrl: pageUrl, content: pageContent, src: pageContent }
+        const items = pageEngine.parseJsonList(pageContent, source.ruleToc!.chapterList)
+        return items.map((item) => {
+          const name = pageEngine.parseJsonItem(item, source.ruleToc?.chapterName, pageCtx)
+          let url = pageEngine.parseJsonItem(item, source.ruleToc?.chapterUrl, { ...pageCtx, jsonItem: item })
+          if (url && !/^https?:\/\//i.test(url))
+            url = new URL(url, source.bookSourceUrl).href
+          return {
+            name,
+            url,
+            updateTime: source.ruleToc?.updateTime
+              ? pageEngine.parseJsonItem(item, source.ruleToc.updateTime, pageCtx)
+              : undefined,
+          }
+        }).filter(chapter => chapter.name && chapter.url)
+      }
 
-        return {
-          name,
-          url,
-          updateTime: source.ruleToc?.updateTime
-            ? engine.parseJsonItem(item, source.ruleToc.updateTime, ctx)
-            : undefined,
+      const chapters = parseJsonPage(content, resolvedTocUrl)
+
+      const nextTocRule = source.ruleToc.nextTocUrl
+      if (nextTocRule) {
+        let currentContent = content
+        let currentUrl = resolvedTocUrl
+        const maxPages = 50
+        for (let page = 0; page < maxPages; page++) {
+          const nextUrlRaw = engine.evaluate(nextTocRule, {
+            baseUrl: currentUrl,
+            content: currentContent,
+            src: currentContent,
+            result: currentContent,
+          })
+          if (!nextUrlRaw)
+            break
+          const nextUrl = /^https?:\/\//i.test(nextUrlRaw)
+            ? nextUrlRaw
+            : new URL(nextUrlRaw, source.bookSourceUrl).href
+          if (nextUrl === currentUrl)
+            break
+          currentUrl = nextUrl
+          currentContent = await this.fetchSourceText(source, currentUrl)
+          chapters.push(...parseJsonPage(currentContent, currentUrl))
         }
-      }).filter(chapter => chapter.name && chapter.url)
+      }
 
       return reverseOrder ? chapters.reverse() : chapters
     }

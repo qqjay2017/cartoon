@@ -1,0 +1,41 @@
+{
+  "bookSourceComment": "2026.06.07",
+  "bookSourceGroup": "🎨 漫画",
+  "bookSourceName": "嬉皮漫畫",
+  "bookSourceType": 2,
+  "bookSourceUrl": "https://m.hipmh.com",
+  "customOrder": 5,
+  "enabled": true,
+  "enabledCookieJar": false,
+  "enabledExplore": false,
+  "header": "{\"Referer\":\"https://reader.hipmh.top/\"}",
+  "lastUpdateTime": 1749254400000,
+  "searchUrl": "https://hipapi.s3file.top/v1/search?q={{key}}&page={{page}}&page_size=20",
+  "ruleSearch": {
+    "bookList": "$.data.data[*]",
+    "name": "$.title",
+    "bookUrl": "@js: 'https://m.hipmh.com/works/' + jsonItem.id",
+    "coverUrl": "@js: 'https://cover.s3imgs.top' + jsonItem.vertical_image_url",
+    "author": "@js: jsonItem.authors && jsonItem.authors.length ? jsonItem.authors.map(function(a){return a.name}).join('，') : ''",
+    "intro": "$.description",
+    "kind": "@js: jsonItem.genres && jsonItem.genres.length ? jsonItem.genres.map(function(g){return g.name}).join('，') : ''"
+  },
+  "ruleBookInfo": {
+    "name": "h1@text",
+    "author": "@js: var m = src.match(/\"author\"[\\s\\S]*?\"name\":\"([^\"]+)\"/); m ? m[1] : ''",
+    "coverUrl": "img[src*='cover.s3imgs.top']@src",
+    "intro": "meta[name=\"description\"]@content",
+    "kind": "@js: var re = /href=\"[^\"]*\\/genre\\/[^\"]*\"[^>]*>([^<]+)<\\/a>/g; var gs=[]; var m; while((m=re.exec(src))!==null){gs.push(m[1]);} gs.join('，')",
+    "tocUrl": "@js: var m = baseUrl.match(/\\/works\\/([^-]+)/); m ? 'https://hipapi.s3file.top/v1/manga/chapters?mid=' + m[1] + '&page=1&per_page=1000&order=asc' : baseUrl"
+  },
+  "ruleToc": {
+    "chapterList": "$.data.items[*]",
+    "chapterName": "$.title",
+    "chapterUrl": "@js: var hid = jsonItem.hid; var di = hid.indexOf('-'); var p1 = hid.substring(0, di); var p2 = hid.substring(di + 1); var d1 = Buffer.from(p1, 'base64').toString('utf8'); var typeId = d1.substring(d1.indexOf('-') + 1); var ap1 = Buffer.from(typeId).toString('base64').replace(/=/g, ''); 'https://hipapi1.s3file.top/v1/chapter?hid=' + ap1 + '-' + p2",
+    "nextTocUrl": "@js: var d = JSON.parse(result).data; d && d.page < d.total_pages ? baseUrl.replace(/([?&]page=)\\d+/, function(m, g){ return g + (d.page + 1); }) : ''",
+    "updateTime": "$.updated_at"
+  },
+  "ruleContent": {
+    "content": "@js: var data = JSON.parse(result); var d = data.data || data; var imgs = d.images || (d.chapter && d.chapter.images) || []; imgs.map(function(i){ var url = typeof i === 'string' ? i : (i.url || i.src || ''); return url ? '<img src=\"' + url + '\">' : ''; }).filter(function(s){ return s; }).join('\\n')"
+  }
+}

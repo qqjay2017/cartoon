@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:manwamu.cc)"
+      "WebFetch(domain:manwamu.cc)",
+      "WebFetch(domain:hipapi.s3file.top)",
+      "WebFetch(domain:hipapi1.s3file.top)",
+      "WebFetch(domain:m.hipmh.com)",
+      "WebFetch(domain:reader.hipmh.top)"
     ]
   }
 }
