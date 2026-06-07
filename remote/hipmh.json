@@ -36,6 +36,6 @@
     "updateTime": "$.updated_at"
   },
   "ruleContent": {
-    "content": "@js: var data = JSON.parse(result); var d = data.data || data; var imgs = d.images || (d.chapter && d.chapter.images) || []; imgs.map(function(i){ var url = typeof i === 'string' ? i : (i.url || i.src || ''); return url ? '<img src=\"' + url + '\">' : ''; }).filter(function(s){ return s; }).join('\\n')"
+    "content": "@js: var data = JSON.parse(result); var d = data.data || data; var imgs = d.images || (d.chapter && d.chapter.images) || []; imgs.map(function(i){ var url = typeof i === 'string' ? i : (i.url || i.src || ''); if (url && url.startsWith('/')) url = 'https://hip-cf-1.s3imgs.top' + url; return url ? '<img src=\"' + url + '\">' : ''; }).filter(function(s){ return s; }).join('\\n')"
   }
 }

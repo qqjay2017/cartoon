@@ -338,7 +338,6 @@ export class BookService {
       : await this.fetchSourceText(source, resolvedTocUrl)
 
     const engine = this.createEngine(source)
-    const ctx = { baseUrl: resolvedTocUrl, content, src: content }
     const reverseOrder = source.ruleToc.chapterList.includes('[-1:0]')
 
     if (isJsonContent(content)) {
