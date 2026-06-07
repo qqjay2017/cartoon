@@ -265,7 +265,7 @@ export class RuleEngine {
         break
       default:
         value = $el.first().attr(kind) ?? $el.first().text().trim()
-        if (['src', 'href', 'data-original'].includes(kind) || kind.startsWith('data-'))
+        if (['src', 'href', 'data-original', 'data-src', 'data-lazy', 'data-original-src'].includes(kind))
           value = this.resolveUrl(value, ctx.baseUrl)
     }
 

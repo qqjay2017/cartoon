@@ -128,10 +128,15 @@ export class NovelBookshelfCache {
     if (!coverUrl || !this.options.binaryFetcher || !/^https?:\/\//i.test(coverUrl))
       return
 
-    const result = await this.options.binaryFetcher(coverUrl, { timeout: 60000 })
-    const ext = imageExtFromUrl(coverUrl, result.contentType)
-    await mkdir(this.coverRoot, { recursive: true })
-    await writeFile(this.coverFilePath(bookshelfId, ext), result.data)
+    try {
+      const result = await this.options.binaryFetcher(coverUrl, { timeout: 60000 })
+      const ext = imageExtFromUrl(coverUrl, result.contentType)
+      await mkdir(this.coverRoot, { recursive: true })
+      await writeFile(this.coverFilePath(bookshelfId, ext), result.data)
+    }
+    catch {
+      // cover fetch may fail (e.g. 403) — skip silently
+    }
   }
 
   async resolveCoverUrl(bookshelfId: string, fallback?: string): Promise<string | undefined> {

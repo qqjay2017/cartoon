@@ -233,7 +233,14 @@ export class NovelCacheService {
     if (!/^https?:\/\//i.test(resolvedUrl))
       return
 
-    const result = await this.options.binaryFetcher(resolvedUrl, { timeout: 60000 })
+    let result: { data: Uint8Array, contentType?: string }
+    try {
+      result = await this.options.binaryFetcher(resolvedUrl, { timeout: 60000 })
+    }
+    catch {
+      // cover fetch may fail (e.g. 403) — skip silently
+      return
+    }
     const ext = imageExtFromUrl(resolvedUrl, result.contentType)
     const coverFile = `cover.${ext}`
     const bookDir = this.getBookDir(sourceId, bookUrl)

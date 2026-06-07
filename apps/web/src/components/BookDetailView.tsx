@@ -297,7 +297,6 @@ export function BookDetailView({ bookshelfId }: Props) {
                   size="sm"
                   variant="secondary"
                   onClick={() => void reloadMeta()}
-                  disabled={isComic}
                 >
                   刷新目录
                 </Button>
