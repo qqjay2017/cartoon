@@ -309,6 +309,14 @@ export const api = {
     })
   },
 
+  prefetchComic(sourceId: string, bookUrl: string, chapterUrl: string, count: number) {
+    return mutateJson<{ started: boolean, alreadyRunning?: boolean }>('/api/cache/prefetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId, bookUrl, chapterUrl, count }),
+    })
+  },
+
   startDownloadJob(
     sourceId: string,
     bookUrl: string,

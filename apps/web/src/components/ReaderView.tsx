@@ -60,6 +60,18 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
   }, [])
 
   useEffect(() => {
+    if (!isComic || !book?.sourceId || !book?.bookUrl || !chapter?.url || chapters.length === 0)
+      return
+    // Prefetch current chapter + next 8.
+    // The API caches chapters *after* the given chapterUrl, so pass the
+    // previous chapter's URL (count=9) to include the current one.
+    // At chapter 0 there is no previous, so just prefetch the next 8.
+    const fromUrl = chapterIndex > 0 ? chapters[chapterIndex - 1]!.url : chapter.url
+    const count = chapterIndex > 0 ? 9 : 8
+    void api.prefetchComic(book.sourceId, book.bookUrl, fromUrl, count)
+  }, [bookshelfId, chapterId, isComic, book?.sourceId, book?.bookUrl, chapter?.url, chapterIndex, chapters])
+
+  useEffect(() => {
     if (chapter) {
       void api.updateProgress(bookshelfId, chapterId, chapter.name)
       setReadingProgress(bookshelfId, chapterIndex, chapterId)
