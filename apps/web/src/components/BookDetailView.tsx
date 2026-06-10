@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
+import { ArrowDownUp, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 import {
   api,
@@ -23,10 +24,17 @@ export function BookDetailView({ bookshelfId }: Props) {
   const [downloading, setDownloading] = useState(false)
   const [downloadMsg, setDownloadMsg] = useState('')
   const [downloadError, setDownloadError] = useState('')
-  const [downloadJob, setDownloadJob] = useState<DownloadJobSnapshot | null>(null)
-  const [cachingChapterIndex, setCachingChapterIndex] = useState<number | null>(null)
+  const [downloadJob, setDownloadJob] = useState<DownloadJobSnapshot | null>(
+    null,
+  )
+  const [cachingChapterIndex, setCachingChapterIndex] = useState<number | null>(
+    null,
+  )
   const [showDownloadCenter, setShowDownloadCenter] = useState(false)
   const [showCbzExport, setShowCbzExport] = useState(false)
+  const [reloadingMeta, setReloadingMeta] = useState(false)
+  const [repairingMeta, setRepairingMeta] = useState(false)
+  const [reverseOrder, setReverseOrder] = useState(true)
 
   const {
     data: detail,
@@ -51,6 +59,9 @@ export function BookDetailView({ bookshelfId }: Props) {
   })
 
   const chapters = tocData?.chapters ?? []
+  const displayChapters = reverseOrder
+    ? [...chapters].map((ch, idx) => ({ ch, idx })).reverse()
+    : chapters.map((ch, idx) => ({ ch, idx }))
 
   const { data: cacheStatus, refetch: refetchCache } = useQuery({
     queryKey: ['cache-status', bookshelfId, chapters.length],
@@ -59,12 +70,14 @@ export function BookDetailView({ bookshelfId }: Props) {
     refetchInterval: (q) => (q.state.data?.caching ? 2000 : false),
   })
 
-  const { data: cachedChaptersData, refetch: refetchCachedChapters } = useQuery({
-    queryKey: ['cached-chapters', bookshelfId],
-    queryFn: () => api.listCachedChapters(bookshelfId),
-    enabled: chapters.length > 0,
-    refetchInterval: cacheStatus?.caching ? 2000 : false,
-  })
+  const { data: cachedChaptersData, refetch: refetchCachedChapters } = useQuery(
+    {
+      queryKey: ['cached-chapters', bookshelfId],
+      queryFn: () => api.listCachedChapters(bookshelfId),
+      enabled: chapters.length > 0,
+      refetchInterval: cacheStatus?.caching ? 2000 : false,
+    },
+  )
 
   const cachedChapterIds = new Set(cachedChaptersData?.cachedChapterIds ?? [])
 
@@ -72,38 +85,47 @@ export function BookDetailView({ bookshelfId }: Props) {
     setCacheMsg('')
     try {
       const r = await api.cacheAll(bookshelfId)
-      setCacheMsg(r.alreadyRunning ? '缓存任务已在运行' : '已开始缓存全部章节，可在下载中心查看进度')
+      setCacheMsg(
+        r.alreadyRunning
+          ? '缓存任务已在运行'
+          : '已开始缓存全部章节，可在下载中心查看进度',
+      )
       await refetchCache()
       await refetchCachedChapters()
-    }
-    catch (e) {
+    } catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '失败')
     }
   }
 
   async function repairMeta() {
     setCacheMsg('')
+    setRepairingMeta(true)
     try {
       const r = await api.repairComicMeta(bookshelfId)
-      setCacheMsg(`修复完成：新增 ${r.repaired} 章，已有 ${r.alreadyTracked} 章`)
+      setCacheMsg(
+        `修复完成：新增 ${r.repaired} 章，已有 ${r.alreadyTracked} 章`,
+      )
       await refetchCache()
       await refetchCachedChapters()
-    }
-    catch (e) {
+    } catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '修复失败')
+    } finally {
+      setRepairingMeta(false)
     }
   }
 
   async function reloadMeta() {
     setCacheMsg('')
+    setReloadingMeta(true)
     try {
       await api.reloadMeta(bookshelfId)
       await queryClient.invalidateQueries({ queryKey: ['book', bookshelfId] })
       await queryClient.invalidateQueries({ queryKey: ['toc', bookshelfId] })
       setCacheMsg('元数据已刷新')
-    }
-    catch (e) {
+    } catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '失败')
+    } finally {
+      setReloadingMeta(false)
     }
   }
 
@@ -119,26 +141,20 @@ export function BookDetailView({ bookshelfId }: Props) {
     try {
       const result = await api.cacheChapter(bookshelfId, chapter.id, force)
       const chapterName = chapter.name ?? `第 ${index + 1} 章`
-      if (result.refreshed)
-        setCacheMsg(`「${chapterName}」已重新缓存`)
-      else if (result.alreadyCached)
-        setCacheMsg(`「${chapterName}」已在缓存中`)
-      else
-        setCacheMsg(`「${chapterName}」已缓存`)
+      if (result.refreshed) setCacheMsg(`「${chapterName}」已重新缓存`)
+      else if (result.alreadyCached) setCacheMsg(`「${chapterName}」已在缓存中`)
+      else setCacheMsg(`「${chapterName}」已缓存`)
       await refetchCache()
       await refetchCachedChapters()
-    }
-    catch (e) {
+    } catch (e) {
       setCacheMsg(e instanceof Error ? e.message : '缓存失败')
-    }
-    finally {
+    } finally {
       setCachingChapterIndex(null)
     }
   }
 
   async function exportBook(format: 'epub') {
-    if (!detail || downloading)
-      return
+    if (!detail || downloading) return
 
     setDownloading(true)
     setDownloadError('')
@@ -156,13 +172,13 @@ export function BookDetailView({ bookshelfId }: Props) {
       )
       if ('localExport' in result && result.localExport) {
         const files = result.exportedFiles.join('、')
-        setDownloadMsg(`已导出 ${result.exportedFiles.length} 个文件到 ${result.exportDir}：${files}`)
+        setDownloadMsg(
+          `已导出 ${result.exportedFiles.length} 个文件到 ${result.exportDir}：${files}`,
+        )
       }
-    }
-    catch (e) {
+    } catch (e) {
       setDownloadError(e instanceof Error ? e.message : '导出失败')
-    }
-    finally {
+    } finally {
       setDownloading(false)
       setDownloadJob(null)
       await refetchCache()
@@ -181,9 +197,11 @@ export function BookDetailView({ bookshelfId }: Props) {
 
   const isComic = detail.sourceType === 2
 
-  function formatCacheProgress(status: BookCacheStatus | undefined, chapterCount: number) {
-    if (!status)
-      return ''
+  function formatCacheProgress(
+    status: BookCacheStatus | undefined,
+    chapterCount: number,
+  ) {
+    if (!status) return ''
     const total = status.totalChapters || chapterCount
     if (status.caching && status.progress) {
       const { current, total: progressTotal, message } = status.progress
@@ -195,10 +213,8 @@ export function BookDetailView({ bookshelfId }: Props) {
 
   function formatDownloadProgress(job: DownloadJobSnapshot | null) {
     const progress = job?.progress
-    if (!progress)
-      return '准备导出...'
-    if (progress.phase === 'toc')
-      return progress.message ?? '获取目录'
+    if (!progress) return '准备导出...'
+    if (progress.phase === 'toc') return progress.message ?? '获取目录'
     if (progress.phase === 'pack') {
       if (progress.total > 1)
         return `${progress.message ?? '正在打包'} (${progress.current}/${progress.total})`
@@ -256,7 +272,7 @@ export function BookDetailView({ bookshelfId }: Props) {
 
                 <Button
                   size="sm"
-                  variant="secondary"
+                  variant="outline"
                   onClick={() => setShowDownloadCenter(true)}
                 >
                   下载中心
@@ -265,7 +281,7 @@ export function BookDetailView({ bookshelfId }: Props) {
                 {isComic ? (
                   <Button
                     size="sm"
-                    variant="secondary"
+                    variant="outline"
                     onClick={() => setShowCbzExport(true)}
                     disabled={!chapters.length}
                   >
@@ -274,7 +290,7 @@ export function BookDetailView({ bookshelfId }: Props) {
                 ) : (
                   <Button
                     size="sm"
-                    variant="secondary"
+                    variant="outline"
                     onClick={() => void exportBook('epub')}
                     disabled={downloading || !chapters.length}
                   >
@@ -287,17 +303,20 @@ export function BookDetailView({ bookshelfId }: Props) {
                     size="sm"
                     variant="outline"
                     onClick={() => void repairMeta()}
-                    disabled={cacheStatus?.caching || !chapters.length}
+                    disabled={repairingMeta || cacheStatus?.caching || !chapters.length}
                   >
+                    {repairingMeta && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
                     修复缓存索引
                   </Button>
                 )}
 
                 <Button
                   size="sm"
-                  variant="secondary"
+                  variant="outline"
                   onClick={() => void reloadMeta()}
+                  disabled={reloadingMeta}
                 >
+                  {reloadingMeta && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
                   刷新目录
                 </Button>
               </div>
@@ -308,14 +327,20 @@ export function BookDetailView({ bookshelfId }: Props) {
               )}
               {isComic && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  导出 CBZ 前需先缓存章节，每 100 章生成一个文件，保存至本地导出目录。
+                  导出 CBZ 前需先缓存章节，每 100
+                  章生成一个文件，保存至本地导出目录。
                 </p>
               )}
-              {!isComic && !downloading && cacheStatus && cacheStatus.cachedChapters > 0 && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  导出 EPUB 时将优先读取本地缓存（已缓存 {cacheStatus.cachedChapters}/{chapters.length || cacheStatus.totalChapters} 章）。
-                </p>
-              )}
+              {!isComic &&
+                !downloading &&
+                cacheStatus &&
+                cacheStatus.cachedChapters > 0 && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    导出 EPUB 时将优先读取本地缓存（已缓存{' '}
+                    {cacheStatus.cachedChapters}/
+                    {chapters.length || cacheStatus.totalChapters} 章）。
+                  </p>
+                )}
               {downloading && (
                 <p className="text-xs text-muted-foreground mt-1">
                   {formatDownloadProgress(downloadJob)}
@@ -325,7 +350,9 @@ export function BookDetailView({ bookshelfId }: Props) {
                 <p className="text-xs text-destructive mt-1">{downloadError}</p>
               )}
               {downloadMsg && (
-                <p className="text-xs text-muted-foreground mt-1">{downloadMsg}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {downloadMsg}
+                </p>
               )}
               {cacheMsg && (
                 <p className="text-xs text-muted-foreground mt-1">{cacheMsg}</p>
@@ -334,9 +361,22 @@ export function BookDetailView({ bookshelfId }: Props) {
           </div>
         </CardHeader>
         <CardContent>
-          <h3 className="font-medium mb-2">
-            目录 {loadingToc ? '(加载中)' : `(${chapters.length})`}
-          </h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-medium">
+              目录 {loadingToc ? '(加载中)' : `(${chapters.length})`}
+            </h3>
+            {chapters.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1 text-xs text-muted-foreground"
+                onClick={() => setReverseOrder(v => !v)}
+              >
+                <ArrowDownUp className="h-3 w-3" />
+                {reverseOrder ? '倒序' : '正序'}
+              </Button>
+            )}
+          </div>
           {tocError && (
             <p className="text-sm text-destructive mb-2">
               {tocErr instanceof Error ? tocErr.message : '目录加载失败'}{' '}
@@ -362,7 +402,7 @@ export function BookDetailView({ bookshelfId }: Props) {
             </p>
           )}
           <div className="max-h-[420px] overflow-auto space-y-1">
-            {chapters.map((ch, index) => (
+            {displayChapters.map(({ ch, idx }) => (
               <div
                 key={ch.id ?? ch.url}
                 className="flex items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
@@ -373,7 +413,7 @@ export function BookDetailView({ bookshelfId }: Props) {
                   onClick={() =>
                     navigate({
                       to: '/read/$bookshelfId/$chapterIndex',
-                      params: { bookshelfId, chapterIndex: String(index) },
+                      params: { bookshelfId, chapterIndex: String(idx) },
                     })
                   }
                 >
@@ -386,13 +426,14 @@ export function BookDetailView({ bookshelfId }: Props) {
                     variant="ghost"
                     className="shrink-0 h-7 px-2"
                     disabled={
-                      cacheStatus?.caching
-                      || (cachingChapterIndex !== null && cachingChapterIndex !== index)
+                      cacheStatus?.caching ||
+                      (cachingChapterIndex !== null &&
+                        cachingChapterIndex !== idx)
                     }
-                    onClick={() => void cacheChapterAt(index)}
+                    onClick={() => void cacheChapterAt(idx)}
                   >
-                    {cachingChapterIndex === index
-                      ? '缓存中'
+                    {cachingChapterIndex === idx
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
                       : cachedChapterIds.has(ch.id)
                         ? '重新缓存'
                         : '缓存'}

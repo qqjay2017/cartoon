@@ -292,6 +292,10 @@ a.reader-btn {
   margin: 0;
 }
 
+.reader-comic-spread-placeholder {
+  display: none;
+}
+
 .reader-comic-webtoon {
   width: 100%;
   max-width: 100%;
@@ -616,5 +620,12 @@ a.reader-btn {
     grid-template-columns: repeat(2, minmax(0, 500px));
     justify-content: center;
     gap: 0;
+  }
+
+  .reader-comic-spread-placeholder {
+    display: block;
+    width: 100%;
+    max-width: 500px;
+    min-height: 1px;
   }
 }

@@ -116,8 +116,21 @@ export function SearchResultsPage() {
                     <p className="text-xs text-muted-foreground line-clamp-2">{book.intro}</p>
                   )}
                 </CardHeader>
-                <CardFooter>
+                <CardFooter className="gap-2">
                   <Button size="sm" onClick={() => void addToBookshelf(book)}>加入书架</Button>
+                  <Button size="sm" variant="outline" asChild>
+                    <Link
+                      to="/book-detail"
+                      search={{
+                        sourceId: book.sourceId,
+                        url: book.bookUrl,
+                        q,
+                        type,
+                      }}
+                    >
+                      查看
+                    </Link>
+                  </Button>
                 </CardFooter>
               </Card>
             ))}

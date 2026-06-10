@@ -21,7 +21,7 @@
       "kind": ".text-sm:nth-child(3)>a@text&&.text-xl@span@text&&.py-1:nth-child(4) > a:nth-child(n+1)@text<js>java.t2s(result);</js>##\\[|\\]",
       "lastChapter": ".my-unit-md@span@text",
       "name": ".text-xl@textNodes",
-      "tocUrl": "<js>\n\nvar mid=src.match(/data\\-mid\\=\"(\\d+)\"/)[1];\njava.put(\"mid\",mid)\nvar r=`https://api-get-v2.mgsearcher.com/api/manga/get?mid=${mid}&mode=all`\nr;\n\n</js>"
+      "tocUrl": "<js>\n\nvar mid=src.match(/data\\-mid\\=\"(\\d+)\"/)[1];\njava.put(\"mid\",mid)\nvar r=`https://api-get-v3.mgsearcher.com/api/manga/get?mid=${mid}`\nr;\n\n</js>"
     },
     "ruleContent": {
       "content": "<js>\nvar data=JSON.parse(result)\nvar imageList=data.data.info.images.images\nvar imgTags = imageList.map(item => `< img src=\"https://f40-1-4.g-mh.online${item.url}\">`).join('\\n');\nimgTags;\n</js>"
@@ -36,7 +36,7 @@
     "ruleToc": {
       "chapterList": ".chapters[*]",
       "chapterName": ".attributes.title",
-      "chapterUrl": "<js>\nvar mid=java.get(\"mid\");\nif(!mid){\n  var m=baseUrl.match(/[?&]mid=(\\d+)/);\n  if(m) mid=m[1];\n}\nvar id=`{{$..id}}`;\nvar r=`https://api-get-v2.mgsearcher.com/api/chapter/getinfo?m=${mid}&c=${id}`;\nr;\n</js>",
+      "chapterUrl": "<js>\nvar mid=java.get(\"mid\");\nif(!mid){\n  var m=baseUrl.match(/[?&]mid=(\\d+)/);\n  if(m) mid=m[1];\n}\nvar id=`{{$..id}}`;\nvar r=`https://api-get-v3.mgsearcher.com/api/chapter/getinfo?m=${mid}&c=${id}`;\nr;\n</js>",
       "updateTime": ".updatedAt"
     },
     "searchUrl": "{{bhost()}}/s/{{key}}?page={{page}}",

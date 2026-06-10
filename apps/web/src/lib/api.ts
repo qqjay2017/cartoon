@@ -264,6 +264,10 @@ export const api = {
     return getJson<{ chapters: ChapterItem[] }>(`/api/toc?${params}`)
   },
 
+  getTocByUrl(sourceId: string, bookUrl: string) {
+    return getJson<{ chapters: ChapterItem[] }>(`/api/toc?${new URLSearchParams({ sourceId, url: bookUrl })}`)
+  },
+
   getChapter(bookshelfId: string, chapterId: string) {
     const params = new URLSearchParams({ bookshelfId, chapterId })
     return getJson<{ text?: string, images?: string[], cached?: boolean }>(`/api/chapter?${params}`)

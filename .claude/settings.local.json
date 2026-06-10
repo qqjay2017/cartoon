@@ -5,7 +5,10 @@
       "WebFetch(domain:hipapi.s3file.top)",
       "WebFetch(domain:hipapi1.s3file.top)",
       "WebFetch(domain:m.hipmh.com)",
-      "WebFetch(domain:reader.hipmh.top)"
+      "WebFetch(domain:reader.hipmh.top)",
+      "WebFetch(domain:api-get-v2.mgsearcher.com)",
+      "WebFetch(domain:api-get-v3.mgsearcher.com)",
+      "WebFetch(domain:manhuafree.com)"
     ]
   }
 }

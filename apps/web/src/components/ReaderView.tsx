@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { api, getReadingProgress, proxyImage, setReadingProgress } from '~/lib/api'
 import {
   loadReaderSettings,
@@ -53,6 +53,7 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
 
   const isComic = book?.sourceType === 2
   const images = content?.images ?? []
+  const shouldPadComicCover = images.length > 1 && images.length % 2 === 1
 
   useEffect(() => {
     setSettings(loadReaderSettings())
@@ -289,13 +290,20 @@ export function ReaderView({ bookshelfId, chapterIndex, onChapterChange }: Props
               ? (
                   <div className="reader-comic-scroll">
                     {images.map((src, i) => (
-                      <img
-                        key={i}
-                        data-comic-page={i}
-                        src={proxyImage(src)}
-                        alt=""
-                        loading={i < 2 ? 'eager' : 'lazy'}
-                      />
+                      <Fragment key={`${i}-${src}`}>
+                        <img
+                          data-comic-page={i}
+                          src={proxyImage(src)}
+                          alt=""
+                          loading={i < 2 ? 'eager' : 'lazy'}
+                        />
+                        {i === 0 && shouldPadComicCover && (
+                          <div
+                            className="reader-comic-spread-placeholder"
+                            aria-hidden
+                          />
+                        )}
+                      </Fragment>
                     ))}
                   </div>
                 )
