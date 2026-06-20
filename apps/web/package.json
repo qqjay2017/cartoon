@@ -28,7 +28,7 @@
     "react-dom": "^19.1.0",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.0",
-    "undici": "^7.10.0"
+    "undici": "^7.28.0"
   },
   "devDependencies": {
     "@tanstack/react-router-devtools": "^1.121.34",
